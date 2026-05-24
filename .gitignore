@@ -1,0 +1,46 @@
+# Build output
+bin/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets & certs
+*.crt
+*.pem
+*.key
+BBgrid_Server/config.json
+BBgrid_Server/ssl/
+BBgrid_Server/data/
+
+# Stray files
+1
+1.png
+list
+
+# Docker
+.dockerignore
+
+# Test artifacts
+*.test
+*.out
+
+# Logs
+*.log
+
+# Shell scripts (deployment-specific)
+*.sh
+
+# Mobile
+BBgrid_Mobile
+
+
+docs
+docker

@@ -1,0 +1,13 @@
+{
+  "server_url": "wss://example.com:9909/ws",
+  "client_token": "",
+  "client_id": "my-device",
+  "data_dir": "./data",
+  "log_path": "./data/client.log",
+  "use_http": false,
+  "insecure": false,
+  "tls_sni": "",
+  "origin": "",
+  "reconnect_delay_seconds": 5,
+  "udp_tunnel_key": ""
+}

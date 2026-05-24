@@ -1,0 +1,20 @@
+{
+  "server": {
+    "addr": ":9909",
+    "domain": "your-domain.com",
+    "tunnel_port": 9908
+  },
+  "tls": {
+    "enabled": true,
+    "cert_file": "ssl/cert.pem",
+    "key_file": "ssl/key.pem"
+  },
+  "auth": {
+    "api_key": "",
+    "client_token": ""
+  },
+  "storage": "data/proxies.json",
+  "data_dir": "data",
+  "public_ip": "",
+  "udp_tunnel_key": ""
+}

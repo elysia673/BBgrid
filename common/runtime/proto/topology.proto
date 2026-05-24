@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package aether.runtime;
+
+option go_package = "BBgrid/common/runtime/pb";
+
+// TopologyService 让 Runtime 订阅 Server 的 topology 意图
+service TopologyService {
+  // Subscribe 持续接收 topology 更新（server push）
+  rpc Subscribe(SubscribeRequest) returns (stream TopologyUpdate);
+
+  // ListTopologies 获取全量 topology（用于 reconcile）
+  rpc ListTopologies(ListTopologiesRequest) returns (ListTopologiesResponse);
+}
+
+message SubscribeRequest {
+  string runtime_id = 1;
+}
+
+message ListTopologiesRequest {
+}
+
+message ListTopologiesResponse {
+  repeated Topology topologies = 1;
+}
+
+message TopologyUpdate {
+  UpdateType type = 1;
+  repeated Topology topologies = 2;
+  // 被删除的 namespace 列表（仅 patch 时有意义）
+  repeated string deleted_namespaces = 3;
+}
+
+enum UpdateType {
+  FULL = 0;
+  PATCH = 1;
+}
+
+// Topology 一个 namespace 的连接意图
+//
+// Server 只描述"应该形成怎样的连接关系"，
+// Runtime 自己决定"如何建立连接"。
+message Topology {
+  string namespace = 1;
+  Intent intent = 2;
+  repeated Member members = 3;
+}
+
+// Intent 连接意图
+message Intent {
+  // 连接拓扑
+  Connectivity connectivity = 1;
+  // 暴露级别
+  Exposure exposure = 2;
+  // 中继策略
+  RelayPolicy relay_policy = 3;
+}
+
+enum Connectivity {
+  // 全互联，每两个节点之间直连
+  MESH = 0;
+  // 中心节点转发
+  HUB_SPOKE = 1;
+  // 点对点，只有 source ↔ target
+  POINT_TO_POINT = 2;
+}
+
+enum Exposure {
+  // 仅 namespace 内部可见
+  INTERNAL = 0;
+  // 允许外部访问
+  EXTERNAL = 1;
+}
+
+enum RelayPolicy {
+  // Runtime 自行判断是否需要中继
+  AUTO = 0;
+  // 禁止中继，必须直连
+  NEVER = 1;
+  // 强制中继
+  ALWAYS = 2;
+}
+
+// Member namespace 中的一个成员
+message Member {
+  string client_id = 1;
+  // 角色：source / target / peer
+  string role = 2;
+}

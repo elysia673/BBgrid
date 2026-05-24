@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package aether.plugin;
+
+option go_package = "BBgrid/common/plugin/proto/pb";
+
+// PluginService 通用外部插件协议
+//
+// 所有外部插件通过此协议与 Server 通信。
+// Server 是事件中枢，插件通过 gRPC 订阅/发布事件。
+service PluginService {
+  // Subscribe 订阅事件流（server push）
+  rpc Subscribe(SubscribeRequest) returns (stream EventBatch);
+
+  // Publish 发布事件到 Server
+  rpc Publish(PublishRequest) returns (PublishResponse);
+
+  // Register 注册插件能力
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Execute 执行 Action（Server → 插件）
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // Heartbeat 心跳保活
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// ==================== Subscribe ====================
+
+message SubscribeRequest {
+  // 插件标识
+  string plugin_id = 1;
+  // 订阅的资源类型（空 = 全部）
+  repeated string resource_types = 2;
+  // 订阅的事件类型（空 = 全部）
+  repeated string event_types = 3;
+}
+
+message EventBatch {
+  repeated PluginEvent events = 1;
+  // 执行请求（Server → 插件）
+  repeated ExecuteRequest execute_requests = 2;
+}
+
+message PluginEvent {
+  // 事件 ID
+  string id = 1;
+  // 事件序列号
+  int64 sequence = 2;
+  // 时间戳（毫秒）
+  int64 timestamp = 3;
+
+  // 资源标识
+  ResourceKey resource = 4;
+  // 事件类型：ADDED, MODIFIED, DELETED
+  string event_type = 5;
+  // 业务数据（JSON 编码）
+  bytes payload = 6;
+}
+
+message ResourceKey {
+  string type = 1;
+  string namespace = 2;
+  string name = 3;
+}
+
+// ==================== Publish ====================
+
+message PublishRequest {
+  string plugin_id = 1;
+  repeated PluginEvent events = 2;
+}
+
+message PublishResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ==================== Register ====================
+
+message RegisterRequest {
+  // 插件标识
+  string plugin_id = 1;
+  // 插件版本
+  string version = 2;
+  // 能力声明
+  repeated Capability capabilities = 3;
+  // Action 声明
+  repeated ActionDeclaration actions = 4;
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message Capability {
+  // 资源类型
+  string resource_type = 1;
+  // 事件类型过滤（空 = 全部）
+  repeated string event_types = 2;
+  // 描述
+  string description = 3;
+}
+
+message ActionDeclaration {
+  // Action 名称
+  string name = 1;
+  // 描述
+  string description = 2;
+  // 参数定义（JSON Schema）
+  bytes params_schema = 3;
+}
+
+// ==================== Execute ====================
+
+message ExecuteRequest {
+  // Action 名称
+  string action = 1;
+  // 参数（JSON 编码）
+  bytes params = 2;
+}
+
+message ExecuteResponse {
+  bool success = 1;
+  // 结果（JSON 编码）
+  bytes result = 2;
+  string error = 3;
+}
+
+// ==================== Heartbeat ====================
+
+message HeartbeatRequest {
+  string plugin_id = 1;
+  int64 timestamp = 2;
+}
+
+message HeartbeatResponse {
+  int64 server_time = 1;
+}
