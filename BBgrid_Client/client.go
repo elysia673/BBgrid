@@ -175,9 +175,9 @@ func checkApprovalStatus(serverURL, clientID, token string, insecure bool) (stri
 
 	// 拼接 API 路径
 	if len(apiURL) > 3 && apiURL[len(apiURL)-3:] == "/ws" {
-		apiURL = apiURL[:len(apiURL)-3] + "/api/v1/register_info"
+		apiURL = apiURL[:len(apiURL)-3] + "/api/v1/register/list"
 	} else {
-		apiURL = apiURL + "/api/v1/register_info"
+		apiURL = apiURL + "/api/v1/register/list"
 	}
 
 	// 发送请求
@@ -396,9 +396,9 @@ func submitRegistration(serverURL, clientID, token, publicKeyPath string, insecu
 
 	// 拼接 API 路径
 	if len(apiURL) > 3 && apiURL[len(apiURL)-3:] == "/ws" {
-		apiURL = apiURL[:len(apiURL)-3] + "/api/v1/register_apply"
+		apiURL = apiURL[:len(apiURL)-3] + "/api/v1/register/apply"
 	} else {
-		apiURL = apiURL + "/api/v1/register_apply"
+		apiURL = apiURL + "/api/v1/register/apply"
 	}
 
 	client := &http.Client{
