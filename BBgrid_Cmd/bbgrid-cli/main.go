@@ -174,64 +174,124 @@ func printCommandHelp(cmd string) {
 
 		"node": `用法: bbgrid-cli node <子命令> [参数]
 
+节点管理。
+
 子命令:
-  list                列出所有节点
-  info <client-id>    查看节点详情`,
+  list              列出所有在线节点
+  <id>              查看指定节点详情
+
+示例:
+  bbgrid-cli node list
+  bbgrid-cli node my-device`,
 
 		"proxy": `用法: bbgrid-cli proxy <子命令> [参数]
 
+代理管理。
+
 子命令:
-  list                          列出所有代理
-  create <client-id> [选项]     创建代理
-  close <port>                  关闭代理
+  list                          列出所有活跃代理
+  create <client-id> [选项]     创建端口转发代理
+  close <port>                  关闭指定端口的代理
 
 create 选项:
-  -remote <port>    服务端端口 (必填)
-  -local <port>     客户端端口 (必填)
+  -remote <port>       服务端对外端口 (必填)
+  -local <port>        客户端本地端口 (必填)
+  -local-ip <ip>       客户端本地 IP (默认 127.0.0.1)
   -protocol <tcp|udp>  协议 (默认 tcp)
-  -bind <addr>      绑定地址 (默认 0.0.0.0)`,
+  -bind <addr>         服务端绑定地址 (默认 0.0.0.0)
 
-		"relay": `用法: bbgrid-cli relay [子命令] [参数]
+示例:
+  bbgrid-cli proxy list
+  bbgrid-cli proxy create my-device -remote 8080 -local 80
+  bbgrid-cli proxy create my-device -remote 3306 -local 3306 -local-ip 192.168.1.100
+  bbgrid-cli proxy close 8080`,
+
+		"relay": `用法: bbgrid-cli relay <子命令> [参数]
+
+中继管理。
 
 子命令:
-  create <source> <target> [选项]   创建中继
-  list                              列出中继会话
-  close <session-id>                关闭中继
+  list                              列出活跃中继会话
+  create <source> <target> [选项]   创建中继会话
+  close <session-id>                关闭中继会话
 
 create 选项:
   -source-port <port>   源端口 (必填)
   -target-port <port>   目标端口 (必填)
-  -protocol <tcp|udp>   协议 (默认 tcp)`,
+  -source-ip <ip>       源绑定 IP (默认 0.0.0.0)
+  -target-ip <ip>       目标本地 IP (默认 127.0.0.1)
+  -protocol <tcp|udp>   协议 (默认 tcp)
+
+示例:
+  bbgrid-cli relay list
+  bbgrid-cli relay create node-a node-b -source-port 3306 -target-port 3306
+  bbgrid-cli relay create node-a node-b -source-port 8080 -target-port 80 -target-ip 192.168.1.100
+  bbgrid-cli relay close session-xxx`,
 
 		"register": `用法: bbgrid-cli register <子命令> [参数]
 
+客户端注册管理，用于管理客户端接入服务器的审批流程。
+
 子命令:
-  apply     提交注册申请
-  approve   审核通过
-  revoke    吊销客户端
-  pending   查看待审核列表
-  list      查看已通过列表`,
+  apply     提交注册申请 (新客户端首次接入时使用)
+  approve   审核通过 (管理员批准待审核的客户端)
+  revoke    吊销客户端 (撤销已通过的客户端证书)
+  pending   查看待审核列表 (显示等待管理员审批的客户端)
+  list      查看已注册列表 (显示所有已通过审核的客户端)
+
+apply 选项:
+  -id <client-id>      客户端 ID (必填)
+  -pubkey <file>       公钥文件路径 (必填)
+  -token <token>       认证 token (必填)
+
+approve 选项:
+  -id <client-id>      客户端 ID (必填)
+  -namespace <ns>      命名空间 (默认 permanent)
+  -role <role>         角色 (默认 permanent)
+
+revoke 选项:
+  -id <client-id>      客户端 ID (必填)
+
+示例:
+  bbgrid-cli register list                    # 查看所有已注册客户端
+  bbgrid-cli register pending                  # 查看待审核客户端
+  bbgrid-cli register approve -id my-device    # 审核通过指定客户端
+  bbgrid-cli register apply -id new-device -pubkey client.pub -token xxx
+  bbgrid-cli register revoke -id old-device    # 吊销客户端`,
 
 		"namespace": `用法: bbgrid-cli namespace <子命令> [参数]
 
+命名空间管理，用于组织和管理客户端分组。
+
 子命令:
   list                              列出所有命名空间
-  info <name>                       命名空间详情
-  clients <name>                    命名空间下的客户端
-  assign <client-id> <ns> <role>    分配客户端`,
+  info <name>                       查看命名空间详情
+  clients <name>                    列出命名空间下的客户端
+  assign <client-id> <ns> <role>    将客户端分配到命名空间
+
+示例:
+  bbgrid-cli namespace list
+  bbgrid-cli namespace info permanent
+  bbgrid-cli namespace clients permanent
+  bbgrid-cli namespace assign my-device production worker`,
 
 		"sync": `用法: bbgrid-cli sync
 
-同步服务器可用操作，结果缓存到 ~/.aether_sync.json`,
+同步服务器可用的操作列表（插件提供的操作），结果缓存到 ~/.aether_sync.json
+
+示例:
+  bbgrid-cli sync`,
 
 		"run": `用法: bbgrid-cli run <action> [key=value...]
 
-执行操作（异步）。
+执行插件提供的操作（异步执行，返回任务 ID）。
 参数以 key=value 形式传入。
 
 示例:
   bbgrid-cli run latency.get client_id=node-01
-  bbgrid-cli run tag.set client_id=node-01 key=env value=prod`,
+  bbgrid-cli run tag.set client_id=node-01 key=env value=prod
+
+提示: 使用 'bbgrid-cli sync' 先同步可用操作列表`,
 
 		"task": `用法: bbgrid-cli task <task-id>
 
@@ -317,16 +377,61 @@ func cmdPing() {
 func cmdStatus() {
 	resp, err := api("GET", "/status", nil)
 	fatalOn(err)
-	print(resp)
+
+	if jsonOutput {
+		printJSON(resp)
+		return
+	}
+
+	var data struct {
+		StartTime string `json:"start_time"`
+		Uptime    string `json:"uptime"`
+		Version   string `json:"version"`
+		PublicIP  string `json:"public_ip"`
+		Stats     struct {
+			Clients int `json:"clients"`
+			Proxies int `json:"proxies"`
+			Relays  int `json:"relays"`
+		} `json:"stats"`
+		Components map[string]struct {
+			Status string `json:"status"`
+			Uptime string `json:"uptime"`
+		} `json:"components"`
+		Plugins []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Actions []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"actions"`
+		} `json:"plugins_static"`
+	}
+	unmarshal(resp.Data, &data)
+
+	fmt.Printf("服务器:     %s\n", data.PublicIP)
+	fmt.Printf("版本:       %s\n", data.Version)
+	fmt.Printf("运行时间:   %s\n", data.Uptime)
+	fmt.Printf("节点数:     %d\n", data.Stats.Clients)
+	fmt.Printf("代理数:     %d\n", data.Stats.Proxies)
+	fmt.Printf("中继数:     %d\n", data.Stats.Relays)
+
+	if len(data.Components) > 0 {
+		fmt.Println("\n组件:")
+		for name, comp := range data.Components {
+			fmt.Printf("  %-12s %s\n", name, comp.Status)
+		}
+	}
 }
 
-// cmdNode 处理节点管理子命令：list / info。
+// cmdNode 处理节点管理子命令：list / <id>。
 func cmdNode(args []string) {
 	if len(args) == 0 {
 		printCommandHelp("node")
-		os.Exit(1)
+		return
 	}
-	sub, args := args[0], args[1:]
+
+	sub := args[0]
+	args = args[1:]
 
 	switch sub {
 	case "list":
@@ -357,32 +462,48 @@ func cmdNode(args []string) {
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\t地址\t状态\t代理数\t主机")
-		fmt.Fprintln(w, "--\t----\t----\t------\t----")
+		fmt.Fprintln(w, "ID\t地址\t状态\t代理数")
+		fmt.Fprintln(w, "--\t----\t----\t------")
 		for _, c := range data.Clients {
 			status := "离线"
 			if c.Online {
 				status = "在线"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", c.ID, c.RemoteAddr, status, c.ProxyCount, c.Host)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", c.ID, c.RemoteAddr, status, c.ProxyCount)
 		}
 		w.Flush()
 
-	case "info":
-		// 查看指定节点详情
-		if len(args) == 0 {
-			fmt.Fprintln(os.Stderr, "用法: bbgrid-cli node info <client-id>")
-			os.Exit(1)
-		}
-		resp, err := api("GET", "/api/v1/nodes/"+args[0], nil)
-		fatalOn(err)
-		print(resp)
-
 	default:
-		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", sub)
-		fmt.Fprintln(os.Stderr, "用法: bbgrid-cli node <list|info>")
-		os.Exit(1)
+		// 当作 node id 查询
+		resp, err := api("GET", "/api/v1/nodes/"+sub, nil)
+		fatalOn(err)
+		if jsonOutput {
+			printJSON(resp)
+		} else {
+			printNodeDetail(resp)
+		}
 	}
+}
+
+// printNodeDetail 以可读格式输出节点详情。
+func printNodeDetail(resp *Response) {
+	var data struct {
+		ID         string `json:"id"`
+		RemoteAddr string `json:"remote_addr"`
+		ProxyCount int    `json:"proxy_count"`
+		Host       string `json:"host"`
+		Online     bool   `json:"online"`
+	}
+	unmarshal(resp.Data, &data)
+
+	status := "离线"
+	if data.Online {
+		status = "在线"
+	}
+	fmt.Printf("ID:       %s\n", data.ID)
+	fmt.Printf("地址:     %s\n", data.RemoteAddr)
+	fmt.Printf("状态:     %s\n", status)
+	fmt.Printf("代理数:   %d\n", data.ProxyCount)
 }
 
 // cmdProxy 处理代理管理子命令：list / create / close。
@@ -425,25 +546,31 @@ func cmdProxy(args []string) {
 
 	case "create":
 		// 创建端口代理
-		if len(args) < 1 {
-			fmt.Fprintln(os.Stderr, "用法: bbgrid-cli proxy create <client-id> -remote <port> -local <port>")
-			os.Exit(1)
-		}
-		clientID := args[0]
 		fs := flag.NewFlagSet("proxy create", flag.ExitOnError)
 		remote := fs.Int("remote", 0, "服务端端口")
 		local := fs.Int("local", 0, "客户端端口")
+		localIP := fs.String("local-ip", "127.0.0.1", "客户端 IP")
 		protocol := fs.String("protocol", "tcp", "协议")
 		bind := fs.String("bind", "0.0.0.0", "绑定地址")
-		localIP := fs.String("local-ip", "127.0.0.1", "客户端 IP")
-		fs.Parse(args[1:])
+		fs.Parse(args)
+
 		if *remote == 0 || *local == 0 {
 			fmt.Fprintln(os.Stderr, "错误: -remote 和 -local 必填")
 			os.Exit(1)
 		}
+
+		clientID := ""
+		if fs.NArg() > 0 {
+			clientID = fs.Arg(0)
+		}
+
 		resp, err := api("POST", "/api/v1/proxies", map[string]any{
-			"client_id": clientID, "remote_port": *remote, "local_port": *local,
-			"protocol": *protocol, "bind_addr": *bind, "local_ip": *localIP,
+			"client_id":   clientID,
+			"remote_port": *remote,
+			"local_port":  *local,
+			"local_ip":    *localIP,
+			"protocol":    *protocol,
+			"bind_addr":   *bind,
 		})
 		fatalOn(err)
 		print(resp)
@@ -1008,51 +1135,28 @@ func printData(data interface{}) {
 	}
 }
 
-// printMap 以 key: value 表格形式输出 map 数据，嵌套结构递归展示。
+// printMap 以 key: value 表格形式输出 map 数据。
 func printMap(m map[string]interface{}) {
-	printMapIndent(m, 0)
-}
-
-// printMapIndent 递归打印 map，支持嵌套 map 和数组。
-func printMapIndent(m map[string]interface{}, depth int) {
-	indent := strings.Repeat("  ", depth)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	for k, v := range m {
 		switch val := v.(type) {
-		case map[string]interface{}:
-			fmt.Fprintf(w, "%s%s:\n", indent, k)
-			w.Flush()
-			printMapIndent(val, depth+1)
-		case []interface{}:
-			fmt.Fprintf(w, "%s%s:\n", indent, k)
-			w.Flush()
-			printListIndent(val, depth+1)
+		case string:
+			if len(val) > 100 {
+				val = val[:50] + "..." + val[len(val)-20:]
+			}
+			fmt.Fprintf(w, "%s:\t%s\n", k, val)
 		default:
-			fmt.Fprintf(w, "%s%s:\t%v\n", indent, k, v)
+			fmt.Fprintf(w, "%s:\t%v\n", k, v)
 		}
 	}
 	w.Flush()
 }
 
-// printListIndent 递归打印数组，支持嵌套结构。
-func printListIndent(list []interface{}, depth int) {
-	indent := strings.Repeat("  ", depth)
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	for _, item := range list {
-		if m, ok := item.(map[string]interface{}); ok {
-			fmt.Fprintf(w, "%s-\n", indent)
-			w.Flush()
-			printMapIndent(m, depth+1)
-		} else {
-			fmt.Fprintf(w, "%s- %v\n", indent, item)
-		}
+// printList 输出数组数据。
+func printList(l []interface{}) {
+	for i, v := range l {
+		fmt.Printf("[%d] %v\n", i, v)
 	}
-	w.Flush()
-}
-
-// printList 输出数组数据，支持嵌套结构。
-func printList(list []interface{}) {
-	printListIndent(list, 0)
 }
 
 // calcMD5 计算文件的 MD5 校验和，返回十六进制字符串。
