@@ -546,21 +546,27 @@ func cmdProxy(args []string) {
 
 	case "create":
 		// 创建端口代理
+		clientID := ""
+		flagArgs := args
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			clientID = args[0]
+			flagArgs = args[1:]
+		}
+
 		fs := flag.NewFlagSet("proxy create", flag.ExitOnError)
 		remote := fs.Int("remote", 0, "服务端端口")
 		local := fs.Int("local", 0, "客户端端口")
 		localIP := fs.String("local-ip", "127.0.0.1", "客户端 IP")
 		protocol := fs.String("protocol", "tcp", "协议")
 		bind := fs.String("bind", "0.0.0.0", "绑定地址")
-		fs.Parse(args)
+		fs.Parse(flagArgs)
 
 		if *remote == 0 || *local == 0 {
 			fmt.Fprintln(os.Stderr, "错误: -remote 和 -local 必填")
 			os.Exit(1)
 		}
 
-		clientID := ""
-		if fs.NArg() > 0 {
+		if clientID == "" && fs.NArg() > 0 {
 			clientID = fs.Arg(0)
 		}
 
