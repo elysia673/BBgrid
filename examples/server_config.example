@@ -1,0 +1,41 @@
+{
+  "server": {
+    "addr": ":9909",
+    "domain": "example.com",
+    "tunnel_port": 9908
+  },
+  "tls": {
+    "enabled": true,
+    "cert_file": "ssl/cert.pem",
+    "key_file": "ssl/key.pem"
+  },
+  "auth": {
+    "api_key": "",
+    "client_token": ""
+  },
+  "storage": "data/proxies.json",
+  "data_dir": "data",
+  "log_path": "data/server.log",
+  "public_ip": "",
+  "plugins": {
+    "file": {
+      "enabled": true,
+      "config": {
+        "data_dir": "data",
+        "server_host": ""
+      }
+    },
+    "latency": {
+      "enabled": true
+    },
+    "persist": {
+      "enabled": true,
+      "config": {
+        "data_dir": "data"
+      }
+    },
+    "tag": {
+      "enabled": true
+    }
+  }
+}
