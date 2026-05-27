@@ -32,6 +32,7 @@ type relaySession struct {
 	cancel        context.CancelFunc
 	mx            *mux.Multiplexer
 	ln            net.Listener
+	closeOnce     sync.Once
 }
 
 // relayManager 管理客户端中继会话。
@@ -110,7 +111,9 @@ func (rm *relayManager) handleRelayClosed(data interface{}) {
 	rm.mu.Unlock()
 
 	if ok {
-		sess.cancel()
+		sess.closeOnce.Do(func() {
+			sess.cancel()
+		})
 	}
 }
 
@@ -119,7 +122,9 @@ func (rm *relayManager) stop() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	for _, s := range rm.sessions {
-		s.cancel()
+		s.closeOnce.Do(func() {
+			s.cancel()
+		})
 	}
 	rm.sessions = make(map[string]*relaySession)
 }
@@ -162,13 +167,15 @@ func (rm *relayManager) cleanupSession(sessionID string) {
 	}
 	rm.mu.Unlock()
 	if ok {
-		sess.cancel()
-		if sess.ln != nil {
-			sess.ln.Close()
-		}
-		if sess.mx != nil {
-			sess.mx.Close()
-		}
+		sess.closeOnce.Do(func() {
+			sess.cancel()
+			if sess.ln != nil {
+				sess.ln.Close()
+			}
+			if sess.mx != nil {
+				sess.mx.Close()
+			}
+		})
 	}
 }
 
@@ -218,6 +225,7 @@ func (rm *relayManager) runSource(ctx context.Context, sess *relaySession) {
 	go func() {
 		<-ctx.Done()
 		ln.Close()
+		mx.Close()
 	}()
 
 	for {
@@ -269,6 +277,11 @@ func (rm *relayManager) runTarget(ctx context.Context, sess *relaySession) {
 
 	rm.sendEstablished(sess.id, true, "")
 	alog.Info(alog.CatRelay, "中继目标端: 中继就绪", "localTarget", localTarget)
+
+	go func() {
+		<-ctx.Done()
+		mx.Close()
+	}()
 
 	<-mx.Done()
 	alog.Info(alog.CatRelay, "中继目标端: 会话已关闭", "session", sess.id)

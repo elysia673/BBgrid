@@ -1,10 +1,9 @@
-package main
+package handler
 
 import (
 	alog "BBgrid/common/log"
 	"BBgrid/common/model"
 	"BBgrid/common/proto"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -14,17 +13,16 @@ import (
 	kcp "github.com/xtaci/kcp-go/v5"
 )
 
-// MessageSender 消息发送器
+// TempMessageSender 消息发送器接口
 type TempMessageSender interface {
 	WriteJSON(v interface{}) error
 }
 
 // TempHandler 临时节点消息处理器
 type TempHandler struct {
-	sender      TempMessageSender
-	proxyMu     sync.RWMutex
-	proxyInfo   map[string]*model.CommandData
-	udpConfig   *UDPTunnelConfig
+	sender       TempMessageSender
+	proxyMu      sync.RWMutex
+	proxyInfo    map[string]*model.CommandData
 	udpTunnelKey string
 }
 
@@ -49,7 +47,7 @@ func (h *TempHandler) SetSender(sender TempMessageSender) {
 func (h *TempHandler) Handle(msg *model.WSMessage) {
 	defer func() {
 		if r := recover(); r != nil {
-			alog.Error(alog.CatSystem, "PANIC in handler", "error", r)
+			alog.Error(alog.CatSystem, "PANIC in temp handler", "error", r)
 		}
 	}()
 
@@ -226,86 +224,4 @@ func (h *TempHandler) connectUDPTunnel(tunnelAddr, localAddr, token string, conf
 
 	alog.Info(alog.CatTunnel, "udp tunnel paired, piping", "local", localAddr)
 	pipeUDP(sess, localConn)
-}
-
-func pipeTCP(a, b net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		defer a.Close()
-		io.Copy(a, b)
-	}()
-
-	go func() {
-		defer wg.Done()
-		defer b.Close()
-		io.Copy(b, a)
-	}()
-
-	wg.Wait()
-}
-
-func pipeUDP(udpConn *kcp.UDPSession, tcpConn net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		defer udpConn.Close()
-		io.Copy(udpConn, tcpConn)
-	}()
-
-	go func() {
-		defer wg.Done()
-		defer tcpConn.Close()
-		io.Copy(tcpConn, udpConn)
-	}()
-
-	wg.Wait()
-}
-
-// unmarshalData 泛型反序列化
-func unmarshalData[T any](data interface{}) (*T, error) {
-	switch v := data.(type) {
-	case string:
-		var result T
-		if err := json.Unmarshal([]byte(v), &result); err != nil {
-			return nil, fmt.Errorf("unmarshal string data: %w", err)
-		}
-		return &result, nil
-	default:
-		b, err := json.Marshal(data)
-		if err != nil {
-			return nil, fmt.Errorf("marshal data: %w", err)
-		}
-		var result T
-		if err := json.Unmarshal(b, &result); err != nil {
-			return nil, fmt.Errorf("unmarshal data: %w", err)
-		}
-		return &result, nil
-	}
-}
-
-// UDPTunnelConfig UDP隧道配置
-type UDPTunnelConfig struct {
-	NoDelay  int
-	Interval int
-	Resend   int
-	NC       int
-	Crypt    string
-	Key      string
-}
-
-// DefaultUDPTunnelConfig 默认UDP隧道配置
-func DefaultUDPTunnelConfig(key string) *UDPTunnelConfig {
-	return &UDPTunnelConfig{
-		NoDelay:  1,
-		Interval: 10,
-		Resend:   2,
-		NC:       1,
-		Crypt:    "aes",
-		Key:      key,
-	}
 }

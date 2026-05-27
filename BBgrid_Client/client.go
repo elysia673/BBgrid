@@ -3,15 +3,12 @@ package main
 import (
 	"BBgrid/BBgrid_Client/conn"
 	"BBgrid/BBgrid_Client/handler"
+	"BBgrid/BBgrid_Client/register"
 	alog "BBgrid/common/log"
 	"BBgrid/common/model"
 	"bytes"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,12 +33,14 @@ type Client struct {
 	tlsSNI         string
 	origin         string
 	udpTunnelKey   string
+	dataDir        string
 	reconnectDelay time.Duration
 	stopCh         chan struct{}
+	logCollector   *LogCollector
 }
 
 // NewClient 创建新的客户端实例。
-func NewClient(url, id, token, privateKeyPath, publicKeyPath, certPath string, useHTTP, insecure bool, tlsSNI, origin, udpTunnelKey string, reconnectDelay time.Duration) *Client {
+func NewClient(url, id, token, privateKeyPath, publicKeyPath, certPath string, useHTTP, insecure bool, tlsSNI, origin, udpTunnelKey, dataDir string, reconnectDelay time.Duration, logCollector *LogCollector) *Client {
 	return &Client{
 		url:            url,
 		id:             id,
@@ -54,8 +53,10 @@ func NewClient(url, id, token, privateKeyPath, publicKeyPath, certPath string, u
 		tlsSNI:         tlsSNI,
 		origin:         origin,
 		udpTunnelKey:   udpTunnelKey,
+		dataDir:        dataDir,
 		reconnectDelay: reconnectDelay,
 		stopCh:         make(chan struct{}),
+		logCollector:   logCollector,
 	}
 }
 
@@ -70,8 +71,8 @@ func (c *Client) Run() {
 	if !fileExists(c.certPath) || !fileExists(c.privateKeyPath) {
 		alog.Info(alog.CatAuth, "证书或私钥不存在，开始注册")
 
-		// 生成密钥对
-		if err := generateKeyPair(c.privateKeyPath, c.publicKeyPath); err != nil {
+		// 生成 ECC 密钥对
+		if err := register.GenerateKeyPair(c.privateKeyPath, c.publicKeyPath); err != nil {
 			alog.Fatal(alog.CatAuth, "生成密钥对失败", "error", err)
 		}
 		alog.Info(alog.CatAuth, "密钥对已生成")
@@ -209,7 +210,9 @@ func checkApprovalStatus(serverURL, clientID, token string, insecure bool) (stri
 			} `json:"clients"`
 		} `json:"data"`
 	}
-	json.Unmarshal(respBody, &result)
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", "", fmt.Errorf("unmarshal response: %w (body: %.200s)", err, string(respBody))
+	}
 
 	if result.Code != 0 {
 		return "", "", fmt.Errorf("query failed")
@@ -239,12 +242,6 @@ func (c *Client) connectAndServe() error {
 	}
 
 	if !c.useHTTP {
-		//dialer.TLSClientConfig = &tls.Config{
-		//	MinVersion: tls.VersionTLS12,
-		//}
-		//if sni := tlsServerName(c.url, c.tlsSNI); sni != "" {
-		//	dialer.TLSClientConfig.ServerName = sni
-		//}
 		cert, err := tls.LoadX509KeyPair(c.certPath, c.privateKeyPath)
 		if err != nil {
 			return fmt.Errorf("load X509 key pair: %w", err)
@@ -290,6 +287,7 @@ func (c *Client) connectAndServe() error {
 
 	connection := conn.New(wsConn, h.Handle)
 	h.SetSender(connection)
+
 	connection.Start()
 	defer func() {
 		h.Stop()
@@ -333,40 +331,6 @@ func (c *Client) registerRaw(wsConn *websocket.Conn) error {
 		}
 	}
 	alog.Info(alog.CatClient, "registered", "clientID", regData.ClientID, "serverHost", regData.ServerHost)
-	return nil
-}
-
-// generateKeyPair 生成 RSA 密钥对
-func generateKeyPair(privateKeyPath, publicKeyPath string) error {
-	// 生成私钥
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return fmt.Errorf("generate private key: %w", err)
-	}
-
-	// 保存私钥
-	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: privateKeyBytes,
-	})
-	if err := os.WriteFile(privateKeyPath, privateKeyPEM, 0600); err != nil {
-		return fmt.Errorf("write private key: %w", err)
-	}
-
-	// 生成公钥
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		return fmt.Errorf("marshal public key: %w", err)
-	}
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: publicKeyBytes,
-	})
-	if err := os.WriteFile(publicKeyPath, publicKeyPEM, 0644); err != nil {
-		return fmt.Errorf("write public key: %w", err)
-	}
-
 	return nil
 }
 
@@ -418,7 +382,9 @@ func submitRegistration(serverURL, clientID, token, publicKeyPath string, insecu
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	json.Unmarshal(respBody, &result)
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("unmarshal response: %w (body: %.200s)", err, string(respBody))
+	}
 
 	if result.Code != 0 {
 		return fmt.Errorf("registration failed: %s", result.Msg)

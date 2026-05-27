@@ -2,9 +2,7 @@ package handler
 
 import (
 	alog "BBgrid/common/log"
-	"BBgrid/common/model"
 	"BBgrid/common/proto"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -94,49 +92,23 @@ func (h *Handler) connectUDPTunnel(tunnelAddr, localAddr, token string, config *
 }
 
 // pipeUDP UDP与TCP之间的双向转发
+// KCP 不支持半关闭，因此当一侧 io.Copy 结束时关闭该侧写入端：
+// tcpConn→udpConn 完成时关闭 udpConn，udpConn→tcpConn 完成时关闭 tcpConn。
 func pipeUDP(udpConn *kcp.UDPSession, tcpConn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		defer udpConn.Close()
 		io.Copy(udpConn, tcpConn)
+		udpConn.Close()
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer tcpConn.Close()
 		io.Copy(tcpConn, udpConn)
+		tcpConn.Close()
 	}()
 
 	wg.Wait()
-}
-
-// handleUDPTunnelRequest 处理UDP隧道请求
-func (h *Handler) handleUDPTunnelRequest(data interface{}) {
-	req, err := unmarshalData[model.TunnelRequestData](data)
-	if err != nil {
-		alog.Error(alog.CatProxy, "udp tunnel_request unmarshal error", "error", err)
-		return
-	}
-
-	h.proxyMu.RLock()
-	info := h.proxyInfo[req.Key]
-	h.proxyMu.RUnlock()
-
-	if info == nil {
-		alog.Warn(alog.CatProxy, "udp tunnel_request: no proxy info for key", "key", req.Key)
-		return
-	}
-
-	localAddr := net.JoinHostPort(info.LocalIP, fmt.Sprintf("%d", info.LocalPort))
-	tunnelAddr := net.JoinHostPort(info.ServerHost, fmt.Sprintf("%d", info.TunnelPort))
-
-	alog.Info(alog.CatProxy, "udp tunnel_request: connecting", "key", req.Key, "local", localAddr, "tunnel", tunnelAddr)
-
-	// 使用默认UDP配置
-	config := DefaultUDPTunnelConfig(h.cfg.UDPTunnelKey)
-
-	go h.connectUDPTunnel(tunnelAddr, localAddr, req.Token, config)
 }

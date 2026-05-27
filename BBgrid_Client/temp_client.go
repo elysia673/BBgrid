@@ -1,12 +1,15 @@
 package main
 
 import (
+	"BBgrid/BBgrid_Client/handler"
 	alog "BBgrid/common/log"
 	"BBgrid/common/model"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -14,24 +17,29 @@ import (
 
 // TempClient 临时客户端
 type TempClient struct {
-	wsURL    string
-	clientID string
-	token    string
-	insecure bool
-	conn     *websocket.Conn
-	stopCh   chan struct{}
-	handler  *TempHandler
+	wsURL        string
+	clientID     string
+	token        string
+	insecure     bool
+	udpTunnelKey string
+	conn         *websocket.Conn
+	connMu       sync.Mutex
+	stopCh       chan struct{}
+	handler      *handler.TempHandler
 }
 
 // NewTempClient 创建临时客户端
-func NewTempClient(wsURL, clientID, token string, insecure bool) *TempClient {
+func NewTempClient(wsURL, clientID, token, udpTunnelKey string, insecure bool) *TempClient {
+	h := handler.NewTempHandler()
+	h.SetUDPTunnelKey(udpTunnelKey)
 	return &TempClient{
-		wsURL:    wsURL,
-		clientID: clientID,
-		token:    token,
-		insecure: insecure,
-		stopCh:   make(chan struct{}),
-		handler:  NewTempHandler(),
+		wsURL:        wsURL,
+		clientID:     clientID,
+		token:        token,
+		insecure:     insecure,
+		udpTunnelKey: udpTunnelKey,
+		stopCh:       make(chan struct{}),
+		handler:      h,
 	}
 }
 
@@ -61,9 +69,11 @@ func (c *TempClient) Run() {
 // Stop 停止客户端
 func (c *TempClient) Stop() {
 	close(c.stopCh)
+	c.connMu.Lock()
 	if c.conn != nil {
 		c.conn.Close()
 	}
+	c.connMu.Unlock()
 }
 
 func (c *TempClient) connect() error {
@@ -72,19 +82,34 @@ func (c *TempClient) connect() error {
 		return fmt.Errorf("invalid url: %w", err)
 	}
 
-	dialer := websocket.DefaultDialer
+	dialer := &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 45 * time.Second,
+	}
 	if c.insecure {
 		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
-	conn, _, err := dialer.Dial(u.String(), nil)
+	// 设置 Origin 头
+	header := http.Header{}
+	origin := "https://" + u.Hostname()
+	if u.Scheme == "ws" {
+		origin = "http://" + u.Hostname()
+	}
+	header.Set("Origin", origin)
+
+	conn, _, err := dialer.Dial(u.String(), header)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
+	c.connMu.Lock()
 	c.conn = conn
+	c.connMu.Unlock()
 	defer func() {
 		conn.Close()
+		c.connMu.Lock()
 		c.conn = nil
+		c.connMu.Unlock()
 	}()
 
 	// 设置pong handler
@@ -125,7 +150,9 @@ func (c *TempClient) connect() error {
 		ClientID   string `json:"client_id"`
 		ServerHost string `json:"server_host"`
 	}
-	json.Unmarshal(data, &regResp)
+	if err := json.Unmarshal(data, &regResp); err != nil {
+		return fmt.Errorf("unmarshal register response: %w", err)
+	}
 
 	alog.Info(alog.CatClient, "registered as temp node", "client_id", regResp.ClientID, "server", regResp.ServerHost)
 

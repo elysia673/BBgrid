@@ -55,8 +55,9 @@ type Handler struct {
 	tunnelCtxs map[string]context.CancelFunc
 	relay      *relayManager
 
-	proxyMu   sync.RWMutex
-	proxyInfo map[string]*model.CommandData
+	proxyMu        sync.RWMutex
+	proxyInfo      map[string]*model.CommandData
+	tunnelContexts map[string]context.Context
 
 	// 更新状态
 	updateMu      sync.Mutex
@@ -70,11 +71,12 @@ type Handler struct {
 func New(cfg Config) *Handler {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &Handler{
-		cfg:        cfg,
-		baseCtx:    ctx,
-		baseCancel: cancel,
-		tunnelCtxs: make(map[string]context.CancelFunc),
-		proxyInfo:  make(map[string]*model.CommandData),
+		cfg:            cfg,
+		baseCtx:        ctx,
+		baseCancel:     cancel,
+		tunnelCtxs:     make(map[string]context.CancelFunc),
+		proxyInfo:      make(map[string]*model.CommandData),
+		tunnelContexts: make(map[string]context.Context),
 	}
 	relayMgr := newRelayManager(cfg, ctx)
 	h.relay = relayMgr
@@ -109,6 +111,8 @@ func (h *Handler) Handle(msg *model.WSMessage) {
 		h.handleProxy(msg.Data)
 	case "proxy_closed":
 		h.handleProxyClosed(msg.Data)
+	case "proxy_outbound":
+		h.handleProxyOutbound(msg.Data)
 	case "tunnel_request":
 		h.handleTunnelRequest(msg.Data)
 	case "ping":
@@ -182,7 +186,12 @@ func (h *Handler) handleUpdateChunk(data interface{}) {
 	}
 
 	h.updateMu.Lock()
-	if h.updateSize > 0 && len(h.updateData)+len(chunk) > h.updateSize {
+	if h.updateSize == 0 {
+		h.updateMu.Unlock()
+		alog.Warn(alog.CatUpdate, "update_chunk: update_start not received, ignoring")
+		return
+	}
+	if len(h.updateData)+len(chunk) > h.updateSize {
 		h.updateMu.Unlock()
 		alog.Warn(alog.CatUpdate, "update_chunk: data exceeds expected size, ignoring")
 		return
@@ -239,6 +248,7 @@ func (h *Handler) handleUpdateEnd() {
 	}
 
 	alog.Info(alog.CatUpdate, "更新成功，正在重启")
+	alog.Flush()
 	os.Exit(0)
 }
 
@@ -250,7 +260,7 @@ func (h *Handler) createRestartScript(execPath, tmpPath string) error {
 
 	switch runtime.GOOS {
 	case "windows":
-		scriptPath = filepath.Join(execDir, "aether_restart.bat")
+		scriptPath = filepath.Join(execDir, "bbgrid_restart.bat")
 		scriptContent = fmt.Sprintf(`@echo off
 timeout /t 2 /nobreak >nul
 move /y "%s" "%s"
@@ -258,7 +268,7 @@ start "" "%s"
 del "%%~f0"
 `, filepath.Clean(tmpPath), filepath.Clean(execPath), filepath.Clean(execPath))
 	default: // linux, darwin
-		scriptPath = filepath.Join(execDir, "aether_restart.sh")
+		scriptPath = filepath.Join(execDir, "bbgrid_restart.sh")
 		scriptContent = fmt.Sprintf(`#!/bin/sh
 sleep 2
 mv %s %s
@@ -277,12 +287,18 @@ rm -- "$0"
 	case "windows":
 		go func() {
 			cmd := exec.Command("cmd", "/c", "start", "/b", scriptPath)
-			cmd.Start()
+			if err := cmd.Start(); err != nil {
+				alog.Error(alog.CatUpdate, "启动重启脚本失败", "error", err)
+				return
+			}
 		}()
 	default:
 		go func() {
 			cmd := exec.Command("/bin/sh", scriptPath)
-			cmd.Start()
+			if err := cmd.Start(); err != nil {
+				alog.Error(alog.CatUpdate, "启动重启脚本失败", "error", err)
+				return
+			}
 		}()
 	}
 
@@ -305,6 +321,7 @@ func (h *Handler) handleProxyClosed(data interface{}) {
 
 	h.proxyMu.Lock()
 	delete(h.proxyInfo, closed.Key)
+	delete(h.tunnelContexts, closed.Key)
 	h.proxyMu.Unlock()
 
 	// 回复确认
@@ -315,6 +332,95 @@ func (h *Handler) handleProxyClosed(data interface{}) {
 		}
 		h.sender.WriteJSON(&ack)
 	}
+}
+
+// ProxyOutboundData 出站代理数据
+type ProxyOutboundData struct {
+	ServerHost string `json:"server_host"`
+	TunnelPort int    `json:"tunnel_port"`
+	Token      string `json:"token"`
+	LocalPort  int    `json:"local_port"`
+}
+
+func (h *Handler) handleProxyOutbound(data interface{}) {
+	cmd, err := unmarshalData[ProxyOutboundData](data)
+	if err != nil {
+		alog.Error(alog.CatProxy, "proxy_outbound unmarshal error", "error", err)
+		return
+	}
+
+	alog.Info(alog.CatProxy, "proxy_outbound received",
+		"serverHost", cmd.ServerHost,
+		"tunnelPort", cmd.TunnelPort,
+		"localPort", cmd.LocalPort)
+
+	// 连接 Server 的 tunnel 端口
+	tunnelAddr := net.JoinHostPort(cmd.ServerHost, fmt.Sprintf("%d", cmd.TunnelPort))
+	localAddr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", cmd.LocalPort))
+
+	key := fmt.Sprintf("outbound-%d", cmd.LocalPort)
+	tunnelCtx, tunnelCancel := context.WithCancel(h.baseCtx)
+	h.registerTunnel(key, tunnelCancel)
+
+	go func() {
+		defer h.stopTunnel(key)
+		h.connectOutboundTunnel(tunnelCtx, tunnelAddr, localAddr, cmd.Token)
+	}()
+}
+
+// connectOutboundTunnel 连接出站隧道
+func (h *Handler) connectOutboundTunnel(ctx context.Context, tunnelAddr, localAddr, token string) {
+	tunnelConn, err := net.DialTimeout("tcp", tunnelAddr, 10*time.Second)
+	if err != nil {
+		alog.Error(alog.CatTunnel, "outbound tunnel dial failed", "addr", tunnelAddr, "error", err)
+		return
+	}
+	defer tunnelConn.Close()
+
+	// 发送认证
+	if err := proto.WriteTunnelAuth(tunnelConn, token); err != nil {
+		alog.Error(alog.CatTunnel, "outbound tunnel auth write failed", "error", err)
+		return
+	}
+
+	// 等待确认
+	ack := make([]byte, 1)
+	tunnelConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.ReadFull(tunnelConn, ack); err != nil || ack[0] != 0x01 {
+		alog.Error(alog.CatTunnel, "outbound tunnel ack failed", "error", err)
+		return
+	}
+	tunnelConn.SetReadDeadline(time.Time{})
+
+	alog.Info(alog.CatTunnel, "outbound tunnel connected", "addr", tunnelAddr)
+
+	// 连接本地 FileAPI
+	localConn, err := net.DialTimeout("tcp", localAddr, 10*time.Second)
+	if err != nil {
+		alog.Error(alog.CatTunnel, "outbound local dial failed", "addr", localAddr, "error", err)
+		return
+	}
+	defer localConn.Close()
+
+	alog.Info(alog.CatTunnel, "outbound local connected", "addr", localAddr)
+
+	// context 取消时关闭连接
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			tunnelConn.Close()
+			localConn.Close()
+		case <-done:
+		}
+	}()
+
+	// 双向搬运数据
+	alog.Info(alog.CatTunnel, "outbound piping", "tunnel", tunnelAddr, "local", localAddr)
+	pipeTCP(tunnelConn, localConn)
+	close(done)
+
+	alog.Info(alog.CatTunnel, "outbound tunnel closed", "addr", tunnelAddr)
 }
 
 func (h *Handler) handleProxy(data interface{}) {
@@ -367,10 +473,10 @@ func (h *Handler) handleProxy(data interface{}) {
 
 	tunnelCtx, tunnelCancel := context.WithCancel(h.baseCtx)
 	h.registerTunnel(key, tunnelCancel)
-	_ = tunnelCtx
 
 	h.proxyMu.Lock()
 	h.proxyInfo[key] = cmd
+	h.tunnelContexts[key] = tunnelCtx
 	h.proxyMu.Unlock()
 }
 
@@ -383,6 +489,7 @@ func (h *Handler) handleTunnelRequest(data interface{}) {
 
 	h.proxyMu.RLock()
 	info := h.proxyInfo[req.Key]
+	ctx := h.tunnelContexts[req.Key]
 	h.proxyMu.RUnlock()
 
 	if info == nil {
@@ -390,15 +497,19 @@ func (h *Handler) handleTunnelRequest(data interface{}) {
 		return
 	}
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	localAddr := net.JoinHostPort(info.LocalIP, fmt.Sprintf("%d", info.LocalPort))
 	tunnelAddr := net.JoinHostPort(info.ServerHost, fmt.Sprintf("%d", info.TunnelPort))
 
 	alog.Info(alog.CatProxy, "tunnel_request: connecting", "key", req.Key, "local", localAddr, "tunnel", tunnelAddr)
 
-	go h.connectAndPipe(tunnelAddr, localAddr, req.Token)
+	go h.connectAndPipe(ctx, tunnelAddr, localAddr, req.Token)
 }
 
-func (h *Handler) connectAndPipe(tunnelAddr, localAddr, token string) {
+func (h *Handler) connectAndPipe(ctx context.Context, tunnelAddr, localAddr, token string) {
 	tunnelConn, err := net.DialTimeout("tcp", tunnelAddr, 10*time.Second)
 	if err != nil {
 		alog.Error(alog.CatTunnel, "tunnel dial failed", "addr", tunnelAddr, "error", err)
@@ -426,8 +537,20 @@ func (h *Handler) connectAndPipe(tunnelAddr, localAddr, token string) {
 	}
 	defer localConn.Close()
 
+	// context 取消时关闭连接
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			tunnelConn.Close()
+			localConn.Close()
+		case <-done:
+		}
+	}()
+
 	alog.Info(alog.CatTunnel, "tunnel paired, piping", "local", localAddr)
 	pipeTCP(tunnelConn, localConn)
+	close(done)
 }
 
 func pipeTCP(a, b net.Conn) {
@@ -436,17 +559,24 @@ func pipeTCP(a, b net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		defer a.Close()
 		io.Copy(a, b)
+		// 半关闭：关闭写端，通知对端不再发送
+		if tc, ok := a.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer b.Close()
 		io.Copy(b, a)
+		if tc, ok := b.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
 	}()
 
 	wg.Wait()
+	a.Close()
+	b.Close()
 }
 
 // runTunnelUDP 运行 UDP 隧道
@@ -539,9 +669,6 @@ func (h *Handler) handleUDPTunnel(conn net.Conn, localIP string, localPort int) 
 		return
 	}
 
-	// 用于发送 UDP 数据到本地服务
-	// 注意：UDP 是无连接的，每次发送可能需要不同的源地址
-	// 这里我们使用一个固定的 UDP 连接来发送
 	localConn, err := net.DialUDP("udp", nil, localAddr)
 	if err != nil {
 		alog.Error(alog.CatTunnel, "本地 UDP 连接失败", "error", err)
@@ -549,39 +676,12 @@ func (h *Handler) handleUDPTunnel(conn net.Conn, localIP string, localPort int) 
 	}
 	defer localConn.Close()
 
-	// 用于跟踪 UDP 会话（本地端口 -> 远程地址）
-	type udpSession struct {
-		remoteAddr *net.UDPAddr
-		lastActive time.Time
-	}
-	sessions := make(map[uint16]*udpSession)
-	var sessionsMu sync.Mutex
-	done := make(chan struct{})
-
-	// 清理过期会话
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				sessionsMu.Lock()
-				now := time.Now()
-				for port, sess := range sessions {
-					if now.Sub(sess.lastActive) > 60*time.Second {
-						delete(sessions, port)
-					}
-				}
-				sessionsMu.Unlock()
-			case <-done:
-				return
-			}
-		}
-	}()
-	defer close(done)
-
 	// 从服务器读取 UDP 数据并转发到本地
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		defer localConn.Close()
 		for {
 			// 读取 UDP 数据头：[2字节目标端口][2字节数据长度]
 			var destPort uint16
@@ -609,13 +709,6 @@ func (h *Handler) handleUDPTunnel(conn net.Conn, localIP string, localPort int) 
 				alog.Error(alog.CatTunnel, "UDP 隧道读取数据错误", "error", err)
 				return
 			}
-
-			// 更新会话
-			sessionsMu.Lock()
-			sessions[destPort] = &udpSession{
-				lastActive: time.Now(),
-			}
-			sessionsMu.Unlock()
 
 			// 发送到本地 UDP 服务
 			if _, err := localConn.Write(data); err != nil {
@@ -653,6 +746,8 @@ func (h *Handler) handleUDPTunnel(conn net.Conn, localIP string, localPort int) 
 			break
 		}
 	}
+
+	wg.Wait()
 }
 
 func (h *Handler) runTunnelWS(ctx context.Context, serverHost string, token string, localPort int, localIP string, key string) {

@@ -96,12 +96,8 @@ func (c *Connection) writePump() {
 
 	for {
 		select {
-		case msg, ok := <-c.send:
+		case msg := <-c.send:
 			_ = c.wsConn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				_ = c.wsConn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
 			if err := c.wsConn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return
 			}
@@ -110,6 +106,8 @@ func (c *Connection) writePump() {
 			if err := c.wsConn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+		case <-c.done:
+			return
 		}
 	}
 }
@@ -132,7 +130,6 @@ func (c *Connection) WriteJSON(v interface{}) error {
 func (c *Connection) Close() {
 	c.closeOnce.Do(func() {
 		close(c.done)
-		close(c.send)
 		c.wsConn.Close()
 	})
 }
