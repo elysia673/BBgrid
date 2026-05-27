@@ -1,0 +1,5 @@
+{
+  "server": "https://your-server.com:9909",
+  "api_key": "",
+  "insecure": false
+}
