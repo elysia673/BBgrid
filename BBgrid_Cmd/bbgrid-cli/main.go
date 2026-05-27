@@ -46,6 +46,7 @@ var (
 	jsonOutput  bool
 	showVersion bool
 	insecure    bool
+	timeout     int
 	cfg         *CLIConfig
 	httpClient  *http.Client
 )
@@ -56,6 +57,7 @@ func init() {
 	flag.BoolVar(&jsonOutput, "json", false, "JSON 输出模式")
 	flag.BoolVar(&showVersion, "version", false, "版本")
 	flag.BoolVar(&insecure, "insecure", false, "跳过 TLS 验证")
+	flag.IntVar(&timeout, "timeout", 300, "超时时间（秒）")
 	flag.Usage = func() { printMainHelp() }
 }
 
@@ -138,6 +140,7 @@ func printMainHelp() {
   -config <path>    配置文件路径 (默认 ~/.bbgrid_config.json)
   -json             以 JSON 格式输出
   -insecure         跳过 TLS 证书验证
+  -timeout <sec>    超时时间（秒，默认 300）
   -version          显示版本信息
 
 帮助:
@@ -944,7 +947,7 @@ func initHTTP() {
 			IdleConnTimeout:   90 * time.Second,
 			ForceAttemptHTTP2: true,
 		},
-		Timeout: 10 * time.Second,
+		Timeout: time.Duration(timeout) * time.Second,
 	}
 }
 
