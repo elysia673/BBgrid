@@ -169,12 +169,11 @@ type StateWorker struct {
 	desiredProxies map[string]ProxyDesiredState // key: "clientID:port"
 	proxyMu        sync.RWMutex
 
-	// 持久化存储
-	storage *store.StorageManager
-
-	// 生命周期
-	stopCh     chan struct{}
-	dispatcher Dispatcher // 事件分发器 (基于 ResourceKey)
+// 持久化存储
+	storage        *store.StorageManager
+	dispatcher     Dispatcher
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
 }
 
 // ProxyDesiredState proxy 期望状态

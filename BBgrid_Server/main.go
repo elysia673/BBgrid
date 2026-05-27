@@ -1,3 +1,5 @@
+// Package main 是 BBgrid Server 入口。
+// 负责加载配置、初始化 Worker、启动 HTTP/gRPC/Tunnel 服务。
 package main
 
 import (
@@ -9,6 +11,7 @@ import (
 	pluginpb "BBgrid/common/plugin/proto/pb"
 	"BBgrid/common/proto"
 	"BBgrid/common/store"
+	_ "BBgrid/plugins/file"
 	_ "BBgrid/plugins/latency"
 	_ "BBgrid/plugins/persist"
 	_ "BBgrid/plugins/tag"
@@ -30,16 +33,20 @@ import (
 	"google.golang.org/grpc"
 )
 
+// 版本信息变量，编译时通过 -ldflags 注入
 var (
 	Version   = "dev"
 	BuildTime = "unknown"
 	GitCommit = "unknown"
 )
 
+// printVersion 打印版本信息并退出
 func printVersion() {
 	fmt.Printf("BBgrid_Server %s (%s) %s\n", Version, GitCommit, BuildTime)
 }
 
+// getPublicIP 获取当前服务器的公网 IP 地址
+// 依次尝试多个外部 API，失败则回退到本机网络接口
 func getPublicIP() string {
 	addrs := []string{
 		"https://api.ipify.org",
@@ -66,6 +73,7 @@ func getPublicIP() string {
 			return ip
 		}
 	}
+	// 外部 API 均失败，回退到本机网络接口
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, iface := range ifaces {
@@ -90,6 +98,7 @@ func getPublicIP() string {
 }
 
 func main() {
+	// ===== 配置加载 =====
 	configPath := flag.String("config", "config.json", "path to config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -104,6 +113,7 @@ func main() {
 		alog.Fatal(alog.CatConfig, "加载配置失败", "error", err)
 	}
 
+	// ===== 日志初始化 =====
 	if cfg.LogPath != "" {
 		if err := alog.SetFile(cfg.LogPath); err != nil {
 			alog.Fatal(alog.CatConfig, "初始化日志文件失败", "error", err, "path", cfg.LogPath)
@@ -111,6 +121,7 @@ func main() {
 		alog.Info(alog.CatConfig, "日志文件已启用", "path", cfg.LogPath)
 	}
 
+	// ===== 公网 IP 检测 =====
 	publicIP := cfg.PublicIP
 	if publicIP == "" {
 		alog.Info(alog.CatSystem, "正在获取公网IP")
@@ -118,11 +129,14 @@ func main() {
 	}
 	alog.Info(alog.CatSystem, "公网IP已确定", "publicIP", publicIP)
 
+	// ===== 状态收集器创建 =====
 	statusCollector := NewStatusCollector(Version, publicIP)
 
+	// ===== 事件分发器创建 =====
 	dispatcher := NewDispatcher()
 	alog.Info(alog.CatSystem, "事件分发器已创建")
 
+	// ===== 存储管理器创建 =====
 	storageManager, err := store.NewStorageManager(store.StorageConfig{
 		DataDir:          cfg.DataDir,
 		SnapshotInterval: 1000,
@@ -133,6 +147,7 @@ func main() {
 	defer storageManager.Close()
 	alog.Info(alog.CatSystem, "存储管理器已创建")
 
+	// ===== Worker 创建：认证、状态、数据、控制、WebSocket =====
 	authWorker := workers.NewAuthWorker(workers.AuthConfig{
 		DataDir:     cfg.DataDir,
 		APIKey:      cfg.Auth.APIKey,
@@ -170,6 +185,7 @@ func main() {
 		stateWorker, controlWorker, dataWorker,
 	)
 
+	// ===== Supervisor 启动 =====
 	supervisor := NewSupervisor()
 	supervisor.Add(authWorker)
 	supervisor.Add(stateWorker)
@@ -180,13 +196,16 @@ func main() {
 	supervisor.Start()
 	alog.Info(alog.CatSystem, "所有 Worker 已启动")
 
+	// ===== 持久化 Provider 注册 =====
 	workers.RegisterPersistProviders(stateWorker)
 
+	// ===== 插件初始化 =====
 	activePlugins, pluginActions := initPlugins(cfg, stateWorker, dispatcher)
 	alog.Info(alog.CatSystem, "插件系统已启动", "count", len(activePlugins))
 
 	statusCollector.SetPlugins(activePlugins)
 
+	// ===== Action 注册表 =====
 	actionRegistry := workers.NewActionRegistry()
 	taskManager := workers.NewTaskManager()
 
@@ -196,22 +215,24 @@ func main() {
 	}
 	alog.Info(alog.CatSystem, "Action 实现已注册")
 
-	// 创建 gRPC Plugin Service
+	// ===== gRPC Plugin Service =====
 	pluginGRPCServer := plugin.NewPluginGRPCServer(actionRegistry)
 
-	// Reconcile: 监听 client ADDED 事件，快速触发 Reconcile
+	// ===== Reconcile 触发：监听 client ADDED 事件 =====
 	dispatcher.SubscribeByType(proto.ResourceTypeClient, func(event proto.GenericEvent) {
 		if event.EventType == proto.EventAdded {
 			reconcileWorker.Trigger()
 		}
 	})
 
+	// 初始化各组件状态为 ok
 	statusCollector.SetAuthStatus("ok", "")
 	statusCollector.SetStateStatus("ok", "")
 	statusCollector.SetDataStatus("ok", "")
 	statusCollector.SetControlStatus("ok", "")
 	statusCollector.SetWSStatus("ok", "")
 
+	// ===== HTTP 路由设置：健康检查 / 状态端点 =====
 	r := gin.Default()
 	r.Use(gin.Recovery(), gin.Logger())
 
@@ -242,41 +263,65 @@ func main() {
 		}
 	})
 
+	// ===== 插件同步与执行端点 =====
 	r.GET("/api/v1/sync", func(c *gin.Context) {
 		grouped := actionRegistry.ListGrouped()
 		c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"plugins": grouped}})
 	})
 
 	r.POST("/api/v1/run", func(c *gin.Context) {
-		var req struct {
-			Action string         `json:"action"`
-			Params map[string]any `json:"params"`
-			Async  bool           `json:"async,omitempty"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "invalid request"})
-			return
+		var actionName string
+		var params map[string]any
+
+		contentType := c.ContentType()
+
+		if strings.HasPrefix(contentType, "multipart/form-data") {
+			// Multipart 模式：action 从 query 读取，body 保留给 handler
+			actionName = c.Query("action")
+			if actionName == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "action query param required"})
+				return
+			}
+			params = make(map[string]any)
+			for k, v := range c.Request.URL.Query() {
+				if k != "action" && len(v) > 0 {
+					params[k] = v[0]
+				}
+			}
+		} else {
+			// JSON 模式（原有逻辑）
+			var req struct {
+				Action string         `json:"action"`
+				Params map[string]any `json:"params"`
+				Async  bool           `json:"async,omitempty"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "invalid request"})
+				return
+			}
+			actionName = req.Action
+			params = req.Params
+
+			// 设置参数到 query string
+			q := c.Request.URL.Query()
+			for k, v := range params {
+				q.Set(k, fmt.Sprintf("%v", v))
+			}
+			c.Request.URL.RawQuery = q.Encode()
 		}
 
-		action, ok := actionRegistry.Get(req.Action)
+		action, ok := actionRegistry.Get(actionName)
 		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"code": 404, "msg": "action not found: " + req.Action})
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "msg": "action not found: " + actionName})
 			return
 		}
-
-		// 设置参数到 query string
-		q := c.Request.URL.Query()
-		for k, v := range req.Params {
-			q.Set(k, fmt.Sprintf("%v", v))
-		}
-		c.Request.URL.RawQuery = q.Encode()
 
 		// 同步执行
 		if action.Source == workers.ActionSourceInternal && action.Handler != nil {
 			action.Handler(c)
 		} else if action.Source == workers.ActionSourceExternal {
 			// 调用外部插件
-			result, err := pluginGRPCServer.ExecuteAction(action.PluginID, req.Action, req.Params)
+			result, err := pluginGRPCServer.ExecuteAction(action.PluginID, actionName, params)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": err.Error()})
 				return
@@ -297,6 +342,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": task})
 	})
 
+	// ===== 认证路由（登录） =====
 	authGroup := r.Group("/api/v1/auth")
 	{
 		authGroup.POST("/login", func(c *gin.Context) {
@@ -320,6 +366,7 @@ func main() {
 		})
 	}
 
+	// ===== 注册路由（申请注册、列表、审批、吊销、待审批） =====
 	registerPublic := r.Group("/api/v1/register")
 	{
 		registerPublic.POST("/apply", func(c *gin.Context) {
@@ -349,9 +396,11 @@ func main() {
 		})
 	}
 
+	// ===== 受保护的 API 路由（需 JWT 认证）：节点、代理、中继、命名空间 =====
 	api := r.Group("/api/v1")
 	api.Use(middleware.NewAuthMiddleware(authWorker).RequireJWT())
 	{
+		// 节点管理
 		api.GET("/nodes", func(c *gin.Context) {
 			clients := controlWorker.ListClients()
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"clients": clients}})
@@ -367,6 +416,7 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": info})
 		})
 
+		// 注册审批
 		api.POST("/register/approve", func(c *gin.Context) {
 			var req struct {
 				ClientID  string `json:"client_id" binding:"required"`
@@ -396,6 +446,7 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"certificate": certStr, "cert_prefix": certPrefix, "client_id": req.ClientID}})
 		})
 
+		// 注册吊销
 		api.POST("/register/revoke", func(c *gin.Context) {
 			var req struct {
 				ClientID string `json:"client_id" binding:"required"`
@@ -411,11 +462,13 @@ func main() {
 			}
 		})
 
+		// 待审批列表
 		api.GET("/register/pending", func(c *gin.Context) {
 			records := authWorker.GetPending()
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"applications": records}})
 		})
 
+		// 代理管理
 		api.GET("/proxies", func(c *gin.Context) {
 			proxies := controlWorker.ListProxies()
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"proxies": proxies}})
@@ -446,6 +499,7 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"message": "proxy closed"}})
 		})
 
+		// 中继管理
 		api.POST("/relay", func(c *gin.Context) {
 			var req workers.CreateRelayRequest
 			if err := c.ShouldBindJSON(&req); err != nil {
@@ -474,6 +528,7 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"session_id": sessionID}})
 		})
 
+		// 命名空间管理
 		api.GET("/namespaces", func(c *gin.Context) {
 			namespaces := controlWorker.ListNamespaces()
 			c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "success", "data": gin.H{"namespaces": namespaces}})
@@ -513,12 +568,15 @@ func main() {
 		})
 	}
 
+	// ===== WebSocket 端点 =====
 	r.GET("/ws", func(c *gin.Context) { wsWorker.Handle(c.Writer, c.Request) })
 	r.GET("/ws/temp", func(c *gin.Context) { wsWorker.HandleTemp(c.Writer, c.Request) })
 	r.GET("/tunnel", func(c *gin.Context) { wsWorker.HandleTunnel(c.Writer, c.Request) })
 	r.GET("/relay", func(c *gin.Context) { wsWorker.HandleRelay(c.Writer, c.Request) })
 
+	// ===== 隧道监听器设置（TCP + KCP/UDP） =====
 	if cfg.Server.TunnelPort > 0 {
+		// TCP 隧道监听
 		go func() {
 			ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Server.TunnelPort))
 			if err != nil {
@@ -541,13 +599,14 @@ func main() {
 			}
 		}()
 
+		// KCP/UDP 隧道监听
 		go func() {
 			udpConfig := workers.DefaultUDPConfig(cfg.UDPTunnelKey)
 			dataWorker.StartKCPProxy(cfg.Server.TunnelPort, "", udpConfig)
 		}()
 	}
 
-	// 启动 gRPC Plugin Service（通用外部插件协议）
+	// ===== gRPC 监听器设置 =====
 	var grpcServer *grpc.Server
 	if cfg.Server.GRPCPort > 0 {
 		grpcServer = grpc.NewServer()
@@ -569,6 +628,7 @@ func main() {
 		pluginGRPCServer.BroadcastEvent(event)
 	})
 
+	// ===== TLS / HTTP 服务器启动 =====
 	caCert := authWorker.GetCA()
 	if caCert == nil {
 		alog.Fatal(alog.CatAuth, "CA证书未加载")
@@ -602,6 +662,7 @@ func main() {
 		}()
 	}
 
+	// ===== 优雅关闭 =====
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
@@ -621,6 +682,8 @@ func main() {
 	alog.Flush()
 }
 
+// handleTunnelConn 处理新的 TCP 隧道连接
+// 先进行认证，认证通过后将连接交给 DataWorker 处理
 func handleTunnelConn(conn net.Conn, data *workers.DataWorker) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -647,6 +710,8 @@ type PluginAction struct {
 	PluginID string
 }
 
+// initPlugins 初始化所有已启用的插件
+// 遍历已注册的插件工厂，初始化插件、注册事件监听和 Action handlers
 func initPlugins(cfg *config.ServerConfig, state *workers.StateWorker, dispatcher *Dispatcher) ([]plugin.Plugin, []PluginAction) {
 	var activePlugins []plugin.Plugin
 	var pluginActions []PluginAction
@@ -715,6 +780,7 @@ func initPlugins(cfg *config.ServerConfig, state *workers.StateWorker, dispatche
 			}
 		}
 
+		// 在独立 goroutine 中运行插件
 		go func(plug plugin.Plugin) {
 			defer func() {
 				if r := recover(); r != nil {

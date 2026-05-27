@@ -275,6 +275,8 @@ func (c *clientConn) writePump() {
 			if err := c.wsConn.WriteMessage(websocket.TextMessage, data); err != nil {
 				return
 			}
+		case <-c.done:
+			return
 		}
 	}
 }
@@ -313,7 +315,6 @@ func (c *clientConn) Close() error {
 				c.auth.RemoveTempClient(clientID)
 			}
 		}
-		close(c.send)
 		c.wsConn.Close()
 	})
 	return nil

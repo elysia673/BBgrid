@@ -36,7 +36,7 @@ func (d *mockDispatcher) Dispatch(event proto.GenericEvent)                     
 
 func newTestStateWorker(t *testing.T) *StateWorker {
 	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "aether-test-*")
+	tmpDir, err := os.MkdirTemp("", "bbgrid-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
