@@ -1,63 +1,147 @@
 // Package tag 标签管理插件
 //
-// 内置组件：直接使用 Dispatcher，不需要 SDK。
+// 内置组件：直接使用 runtime.Core。
 package tag
 
 import (
+	"BBgrid/BBgrid_Server/runtime"
 	alog "BBgrid/common/log"
 	"BBgrid/common/persist"
-	"BBgrid/common/plugin"
-	"encoding/json"
-	"net/http"
 	"strings"
 	"sync"
 )
 
 func init() {
-	plugin.Register("tag", func() plugin.Plugin {
-		return &TagPlugin{
-			tags:   make(map[string]map[string]string),
-			stopCh: make(chan struct{}),
-		}
-	})
+	// 注册到旧的 plugin registry (过渡用)
 }
 
 type TagPlugin struct {
-	dispatcher plugin.Dispatcher
-	tags       map[string]map[string]string
-	mu         sync.RWMutex
-	stopCh     chan struct{}
+	core   *runtime.Core
+	tags   map[string]map[string]string
+	mu     sync.RWMutex
+	stopCh chan struct{}
+}
+
+func New() *TagPlugin {
+	return &TagPlugin{
+		tags:   make(map[string]map[string]string),
+		stopCh: make(chan struct{}),
+	}
 }
 
 func (p *TagPlugin) Name() string    { return "tag" }
 func (p *TagPlugin) Version() string { return "1.0.0" }
 
-func (p *TagPlugin) Init(dispatcher plugin.Dispatcher, state plugin.StateStore, config map[string]any) error {
-	p.dispatcher = dispatcher
+func (p *TagPlugin) Init(core *runtime.Core, config map[string]any) error {
+	p.core = core
+
+	// 注册持久化 provider
 	persist.Register(p)
-	alog.Info("tag", "plugin initialized")
+
+	// 注册 Action Schema
+	schema := p.Schema()
+	for _, s := range schema {
+		core.Capability().Register(runtime.Capability{
+			Name:        s.Name,
+			Description: s.Description,
+			Source:      runtime.SourceInternal,
+			Schema:      s,
+		}, p.handleAction)
+	}
+
+	alog.Info(alog.CatSystem, "tag 插件初始化完成")
 	return nil
 }
 
 func (p *TagPlugin) Run() error {
-	alog.Info("tag", "plugin started")
 	<-p.stopCh
-	alog.Info("tag", "plugin stopped")
 	return nil
 }
 
 func (p *TagPlugin) Stop() { close(p.stopCh) }
 
-func (p *TagPlugin) Actions() []plugin.Action {
-	return []plugin.Action{
-		{Name: "tag.set", Description: "设置客户端标签", Params: []plugin.Param{{Name: "client_id", Type: "string", Required: true}, {Name: "key", Type: "string", Required: true}, {Name: "value", Type: "string", Required: true}}},
-		{Name: "tag.delete", Description: "删除客户端标签", Params: []plugin.Param{{Name: "client_id", Type: "string", Required: true}, {Name: "key", Type: "string", Required: true}}},
-		{Name: "tag.get", Description: "获取客户端的所有标签", Params: []plugin.Param{{Name: "client_id", Type: "string", Required: true}}},
-		{Name: "tag.list", Description: "按标签筛选客户端", Params: []plugin.Param{{Name: "tag", Type: "string", Required: false}}},
+func (p *TagPlugin) Schema() []runtime.ActionSchema {
+	return []runtime.ActionSchema{
+		{
+			Name:        "tag.set",
+			Description: "设置客户端标签",
+			Params: []runtime.ParamSchema{
+				{Name: "client_id", Type: "string", Required: true},
+				{Name: "key", Type: "string", Required: true},
+				{Name: "value", Type: "string", Required: true},
+			},
+		},
+		{
+			Name:        "tag.delete",
+			Description: "删除客户端标签",
+			Params: []runtime.ParamSchema{
+				{Name: "client_id", Type: "string", Required: true},
+				{Name: "key", Type: "string", Required: true},
+			},
+		},
+		{
+			Name:        "tag.get",
+			Description: "获取客户端的所有标签",
+			Params: []runtime.ParamSchema{
+				{Name: "client_id", Type: "string", Required: true},
+			},
+		},
+		{
+			Name:        "tag.list",
+			Description: "按标签筛选客户端",
+			Params: []runtime.ParamSchema{
+				{Name: "tag", Type: "string", Required: false},
+			},
+		},
 	}
 }
 
-func (p *TagPlugin) Capabilities() []plugin.Capability { return nil }
+func (p *TagPlugin) handleAction(ctx *runtime.ActionContext) (*runtime.ActionResult, error) {
+	switch ctx.Action {
+	case "tag.set":
+		clientID, _ := ctx.Params["client_id"].(string)
+		key, _ := ctx.Params["key"].(string)
+		value, _ := ctx.Params["value"].(string)
+		if clientID == "" || key == "" || value == "" {
+			return &runtime.ActionResult{Code: 400, Msg: "client_id, key, value are required"}, nil
+		}
+		p.SetTag(clientID, key, value)
+		return &runtime.ActionResult{Code: 200, Data: map[string]string{"client_id": clientID, "key": key, "value": value}}, nil
+
+	case "tag.delete":
+		clientID, _ := ctx.Params["client_id"].(string)
+		key, _ := ctx.Params["key"].(string)
+		if clientID == "" || key == "" {
+			return &runtime.ActionResult{Code: 400, Msg: "client_id and key are required"}, nil
+		}
+		if !p.DeleteTag(clientID, key) {
+			return &runtime.ActionResult{Code: 404, Msg: "tag not found"}, nil
+		}
+		return &runtime.ActionResult{Code: 200, Data: map[string]string{"client_id": clientID, "key": key}}, nil
+
+	case "tag.get":
+		clientID, _ := ctx.Params["client_id"].(string)
+		if clientID == "" {
+			return &runtime.ActionResult{Code: 400, Msg: "client_id is required"}, nil
+		}
+		tags := p.GetTags(clientID)
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		return &runtime.ActionResult{Code: 200, Data: map[string]any{"client_id": clientID, "tags": tags}}, nil
+
+	case "tag.list":
+		filter, _ := ctx.Params["tag"].(string)
+		result := p.ListByTag(filter)
+		if len(result) == 0 {
+			return &runtime.ActionResult{Code: 200, Msg: "没有标签"}, nil
+		}
+		return &runtime.ActionResult{Code: 200, Data: result}, nil
+
+	default:
+		return &runtime.ActionResult{Code: 404, Msg: "unknown action"}, nil
+	}
+}
 
 func (p *TagPlugin) Export() any {
 	p.mu.RLock()
@@ -171,61 +255,4 @@ func (p *TagPlugin) ListByTag(filter string) []ClientTags {
 		result = append(result, ct)
 	}
 	return result
-}
-
-func (p *TagPlugin) HandleSetTag(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("client_id")
-	key := r.URL.Query().Get("key")
-	value := r.URL.Query().Get("value")
-	if clientID == "" || key == "" || value == "" {
-		http.Error(w, `{"code":400,"msg":"client_id, key, value are required"}`, http.StatusBadRequest)
-		return
-	}
-	p.SetTag(clientID, key, value)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"client_id": clientID, "key": key, "value": value}})
-}
-
-func (p *TagPlugin) HandleDeleteTag(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("client_id")
-	key := r.URL.Query().Get("key")
-	if clientID == "" || key == "" {
-		http.Error(w, `{"code":400,"msg":"client_id and key are required"}`, http.StatusBadRequest)
-		return
-	}
-	if !p.DeleteTag(clientID, key) {
-		http.Error(w, `{"code":404,"msg":"tag not found"}`, http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"client_id": clientID, "key": key}})
-}
-
-func (p *TagPlugin) HandleGetTags(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("client_id")
-	if clientID == "" {
-		http.Error(w, `{"code":400,"msg":"client_id is required"}`, http.StatusBadRequest)
-		return
-	}
-	tags := p.GetTags(clientID)
-	if tags == nil {
-		tags = map[string]string{}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"client_id": clientID, "tags": tags}})
-}
-
-func (p *TagPlugin) HandleListByTag(w http.ResponseWriter, r *http.Request) {
-	filter := r.URL.Query().Get("tag")
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": p.ListByTag(filter)})
-}
-
-func (p *TagPlugin) GetHTTPHandlers() map[string]http.HandlerFunc {
-	return map[string]http.HandlerFunc{
-		"tag.set":    p.HandleSetTag,
-		"tag.delete": p.HandleDeleteTag,
-		"tag.get":    p.HandleGetTags,
-		"tag.list":   p.HandleListByTag,
-	}
 }

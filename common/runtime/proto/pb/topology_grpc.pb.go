@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TopologyService_Subscribe_FullMethodName      = "/aether.runtime.TopologyService/Subscribe"
-	TopologyService_ListTopologies_FullMethodName = "/aether.runtime.TopologyService/ListTopologies"
+	TopologyService_Subscribe_FullMethodName      = "/bbgrid.runtime.TopologyService/Subscribe"
+	TopologyService_ListTopologies_FullMethodName = "/bbgrid.runtime.TopologyService/ListTopologies"
 )
 
 // TopologyServiceClient is the client API for TopologyService service.
@@ -152,7 +152,7 @@ func _TopologyService_ListTopologies_Handler(srv interface{}, ctx context.Contex
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var TopologyService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "aether.runtime.TopologyService",
+	ServiceName: "bbgrid.runtime.TopologyService",
 	HandlerType: (*TopologyServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

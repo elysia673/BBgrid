@@ -24,18 +24,19 @@ type FileAPIServer struct {
 	clientID string
 	dataDir  string
 
-	// Server HTTP API
 	serverURL  string
+	apiKey     string
 	httpClient *http.Client
 }
 
-func NewFileAPIServer(port int, serverURL, clientID, dataDir string) *FileAPIServer {
+func NewFileAPIServer(port int, serverURL, clientID, dataDir, apiKey string) *FileAPIServer {
 	return &FileAPIServer{
 		port:       port,
 		stopCh:     make(chan struct{}),
 		clientID:   clientID,
 		dataDir:    dataDir,
 		serverURL:  serverURL,
+		apiKey:     apiKey,
 		httpClient: &http.Client{Timeout: 5 * time.Minute},
 	}
 }
@@ -140,7 +141,7 @@ func (s *FileAPIServer) uploadFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// pushToServer 将文件转发到 Server 的 /api/v1/run
+// pushToServer 将文件转发到 Server 的 /runtime/call
 func (s *FileAPIServer) pushToServer(filename, fileType string, file io.Reader) error {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -155,8 +156,8 @@ func (s *FileAPIServer) pushToServer(filename, fileType string, file io.Reader) 
 	}
 	writer.Close()
 
-	// 发送到 Server /api/v1/run
-	apiURL := fmt.Sprintf("%s/api/v1/run?action=file.push&client_id=%s&type=%s",
+	// 发送到 Server /runtime/call
+	apiURL := fmt.Sprintf("%s/api/v1/runtime/call?action=file.push&client_id=%s&type=%s",
 		s.serverURL, s.clientID, fileType)
 
 	req, err := http.NewRequest("POST", apiURL, &body)
@@ -164,6 +165,9 @@ func (s *FileAPIServer) pushToServer(filename, fileType string, file io.Reader) 
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if s.apiKey != "" {
+		req.Header.Set("X-CLIENT-TOKEN", s.apiKey)
+	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -197,11 +201,20 @@ func (s *FileAPIServer) handlePullFromServer(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// 从 Server 下载
-	apiURL := fmt.Sprintf("%s/api/v1/run?action=file.pull&client_id=%s&filename=%s&type=%s",
+	// 从 Server 下载（使用流式下载端点）
+	apiURL := fmt.Sprintf("%s/api/v1/runtime/download?client_id=%s&filename=%s&type=%s",
 		s.serverURL, s.clientID, filename, fileType)
 
-	resp, err := s.httpClient.Get(apiURL)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		http.Error(w, "Server unavailable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if s.apiKey != "" {
+		req.Header.Set("X-CLIENT-TOKEN", s.apiKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		http.Error(w, "Server unavailable: "+err.Error(), http.StatusBadGateway)
 		return

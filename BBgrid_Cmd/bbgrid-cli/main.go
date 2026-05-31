@@ -1,4 +1,4 @@
-// Package main 是 BBgrid CLI 工具
+// Package main 是 Aether CLI 工具
 package main
 
 import (
@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -53,7 +54,7 @@ var (
 
 func init() {
 	home := getHomeDir()
-	flag.StringVar(&configPath, "config", filepath.Join(home, ".bbgrid_config.json"), "配置文件路径")
+	flag.StringVar(&configPath, "config", filepath.Join(home, ".aether_config.json"), "配置文件路径")
 	flag.BoolVar(&jsonOutput, "json", false, "JSON 输出模式")
 	flag.BoolVar(&showVersion, "version", false, "版本")
 	flag.BoolVar(&insecure, "insecure", false, "跳过 TLS 验证")
@@ -64,7 +65,7 @@ func init() {
 func main() {
 	flag.Parse()
 	if showVersion {
-		fmt.Printf("bbgrid-cli %s (%s) %s\n", Version, GitCommit, BuildTime)
+		fmt.Printf("aether-cli %s (%s) %s\n", Version, GitCommit, BuildTime)
 		return
 	}
 
@@ -119,9 +120,9 @@ func main() {
 // ==================== 帮助 ====================
 
 func printMainHelp() {
-	fmt.Print(`bbgrid-cli - BBgrid 网络代理管理工具
+	fmt.Print(`aether-cli - Aether 网络代理管理工具
 
-用法: bbgrid-cli [全局选项] <命令> [参数]
+用法: aether-cli [全局选项] <命令> [参数]
 
 命令:
   login       登录服务器并保存认证信息
@@ -137,27 +138,27 @@ func printMainHelp() {
   task        查询异步任务状态
 
 全局选项:
-  -config <path>    配置文件路径 (默认 ~/.bbgrid_config.json)
+  -config <path>    配置文件路径 (默认 ~/.aether_config.json)
   -json             以 JSON 格式输出
   -insecure         跳过 TLS 证书验证
   -timeout <sec>    超时时间（秒，默认 300）
   -version          显示版本信息
 
 帮助:
-  bbgrid-cli help <命令>    查看命令详细用法和示例
+  aether-cli help <命令>    查看命令详细用法和示例
 `)
 	os.Exit(0)
 }
 
 func printCommandHelp(cmd string) {
 	helps := map[string]string{
-		"login": `用法: bbgrid-cli login -server <url> -api-key <key>
+		"login": `用法: aether-cli login -server <url> -api-key <key>
 
 选项:
   -server <url>     服务器地址 (必填)
   -api-key <key>    API 密钥 (必填)`,
 
-		"node": `用法: bbgrid-cli node <子命令> [参数]
+		"node": `用法: aether-cli node <子命令> [参数]
 
 节点管理。
 
@@ -166,10 +167,10 @@ func printCommandHelp(cmd string) {
   <id>              查看指定节点详情
 
 示例:
-  bbgrid-cli node list
-  bbgrid-cli node my-device`,
+  aether-cli node list
+  aether-cli node my-device`,
 
-		"proxy": `用法: bbgrid-cli proxy <子命令> [参数]
+		"proxy": `用法: aether-cli proxy <子命令> [参数]
 
 代理管理。
 
@@ -186,34 +187,38 @@ create 选项:
   -bind <addr>         服务端绑定地址 (默认 0.0.0.0)
 
 示例:
-  bbgrid-cli proxy list
-  bbgrid-cli proxy create my-device -remote 8080 -local 80
-  bbgrid-cli proxy create my-device -remote 3306 -local 3306 -local-ip 192.168.1.100
-  bbgrid-cli proxy close 8080`,
+  aether-cli proxy list
+  aether-cli proxy create my-device -remote 8080 -local 80
+  aether-cli proxy create my-device -remote 3306 -local 3306 -local-ip 192.168.1.100
+  aether-cli proxy close 8080`,
 
-		"relay": `用法: bbgrid-cli relay <子命令> [参数]
+		"relay": `用法: aether-cli relay <子命令> [参数]
 
-中继管理。
+中继管理——建立 A端→B端 隧道。
 
 子命令:
-  list                              列出活跃中继会话
-  create <source> <target> [选项]   创建中继会话
-  close <session-id>                关闭中继会话
+  list                              列出活跃中继
+
+  create <A端> <B端> [选项]         创建中继
+    A端: 对外开端口等待连接
+    B端: 实际服务所在的机器
+    流量: 外部 → A端:aport → relay → B端:bport
+
+  close <会话ID>                    关闭中继
 
 create 选项:
-  -source-port <port>   源端口 (必填)
-  -target-port <port>   目标端口 (必填)
-  -source-ip <ip>       源绑定 IP (默认 0.0.0.0)
-  -target-ip <ip>       目标本地 IP (默认 127.0.0.1)
-  -protocol <tcp|udp>   协议 (默认 tcp)
+  -aport <port>       A端对外端口 (必填)
+  -bport <port>       B端服务端口 (必填)  
+  -aip <ip>           A端绑定 IP (默认 0.0.0.0)
+  -bip <ip>           B端服务 IP (默认 127.0.0.1)
+  -protocol <tcp|udp> 协议 (默认 tcp)
 
 示例:
-  bbgrid-cli relay list
-  bbgrid-cli relay create node-a node-b -source-port 3306 -target-port 3306
-  bbgrid-cli relay create node-a node-b -source-port 8080 -target-port 80 -target-ip 192.168.1.100
-  bbgrid-cli relay close session-xxx`,
+  # 在 node-a 上开 8080 端口，转发到 node-b 的 80
+  aether-cli relay create node-a node-b -aport 8080 -bport 80
+  # 然后在 node-a 上执行: curl localhost:8080`,
 
-		"register": `用法: bbgrid-cli register <子命令> [参数]
+		"register": `用法: aether-cli register <子命令> [参数]
 
 客户端注册管理，用于管理客户端接入服务器的审批流程。
 
@@ -238,13 +243,13 @@ revoke 选项:
   -id <client-id>      客户端 ID (必填)
 
 示例:
-  bbgrid-cli register list                    # 查看所有已注册客户端
-  bbgrid-cli register pending                  # 查看待审核客户端
-  bbgrid-cli register approve -id my-device    # 审核通过指定客户端
-  bbgrid-cli register apply -id new-device -pubkey client.pub -token xxx
-  bbgrid-cli register revoke -id old-device    # 吊销客户端`,
+  aether-cli register list                    # 查看所有已注册客户端
+  aether-cli register pending                  # 查看待审核客户端
+  aether-cli register approve -id my-device    # 审核通过指定客户端
+  aether-cli register apply -id new-device -pubkey client.pub -token xxx
+  aether-cli register revoke -id old-device    # 吊销客户端`,
 
-		"namespace": `用法: bbgrid-cli namespace <子命令> [参数]
+		"namespace": `用法: aether-cli namespace <子命令> [参数]
 
 命名空间管理，用于组织和管理客户端分组。
 
@@ -255,28 +260,28 @@ revoke 选项:
   assign <client-id> <ns> <role>    将客户端分配到命名空间
 
 示例:
-  bbgrid-cli namespace list
-  bbgrid-cli namespace info permanent
-  bbgrid-cli namespace clients permanent
-  bbgrid-cli namespace assign my-device production worker`,
+  aether-cli namespace list
+  aether-cli namespace info permanent
+  aether-cli namespace clients permanent
+  aether-cli namespace assign my-device production worker`,
 
-		"sync": `用法: bbgrid-cli sync
+		"sync": `用法: aether-cli sync
 
-同步服务器可用的操作列表（插件提供的操作），结果缓存到 ~/.bbgrid_sync.json
+同步服务器可用的操作列表（插件提供的操作），结果缓存到 ~/.aether_sync.json
 
 示例:
-  bbgrid-cli sync`,
+  aether-cli sync`,
 
-		"run": `用法: bbgrid-cli run <action> [key=value...]
+		"run": `用法: aether-cli run <action> [key=value...]
 
 执行插件提供的操作（异步执行，返回任务 ID）。
 参数以 key=value 形式传入。
 
 示例:
-  bbgrid-cli run latency.get client_id=node-01
-  bbgrid-cli run tag.set client_id=node-01 key=env value=prod
+  aether-cli run latency.get client_id=node-01
+  aether-cli run tag.set client_id=node-01 key=env value=prod
 
-提示: 使用 'bbgrid-cli sync' 先同步可用操作列表`,
+提示: 使用 'aether-cli sync' 先同步可用操作列表`,
 	}
 
 	if h, ok := helps[cmd]; ok {
@@ -297,9 +302,11 @@ func cmdLogin(args []string) {
 
 	if *server == "" || *apiKey == "" {
 		fmt.Fprintln(os.Stderr, "错误: -server 和 -api-key 必填")
-		fmt.Fprintln(os.Stderr, "用法: bbgrid-cli login -server <url> -api-key <key>")
+		fmt.Fprintln(os.Stderr, "用法: aether-cli login -server <url> -api-key <key>")
 		os.Exit(1)
 	}
+
+	*server = normalizeServerURL(*server)
 
 	resp, err := httpClient.Post(*server+"/api/v1/auth/login", "application/json",
 		bytes.NewReader([]byte(fmt.Sprintf(`{"api_key":"%s"}`, *apiKey))))
@@ -331,8 +338,7 @@ func cmdLogin(args []string) {
 	cfg.TokenExp = time.Now().Unix() + result.Data.ExpiresIn
 	cfg.Insecure = cfg.Insecure || insecure
 
-	data, _ := json.MarshalIndent(cfg, "", "  ")
-	os.WriteFile(configPath, data, 0600)
+	saveConfig(configPath, cfg)
 	fmt.Println("登录成功")
 }
 
@@ -561,7 +567,7 @@ func cmdProxy(args []string) {
 
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", sub)
-		fmt.Fprintln(os.Stderr, "用法: bbgrid-cli proxy <list|create|close>")
+		fmt.Fprintln(os.Stderr, "用法: aether-cli proxy <list|create|close>")
 		os.Exit(1)
 	}
 }
@@ -598,45 +604,41 @@ func cmdRelay(args []string) {
 			return
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "会话ID\t源端\t目标\t协议\t状态")
-		fmt.Fprintln(w, "-------\t----\t----\t----\t----")
+		fmt.Fprintln(w, "会话ID\tA端(入口)\tB端(服务)\t协议")
+		fmt.Fprintln(w, "-------\t-------\t--------\t----")
 		for _, s := range data.Sessions {
-			id := s.SessionID
-			if len(id) > 12 {
-				id = id[:12]
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id, s.SourceClient, s.TargetClient, s.Protocol, s.Status)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.SessionID, s.SourceClient, s.TargetClient, s.Protocol)
 		}
 		w.Flush()
 
 	case "create":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "用法: bbgrid-cli relay create <source> <target> -source-port <port> -target-port <port>")
+			fmt.Fprintln(os.Stderr, "用法: aether-cli relay create <A端> <B端> -aport <port> -bport <port>")
 			os.Exit(1)
 		}
-		source, target := args[0], args[1]
+		aSide, bSide := args[0], args[1]
 		fs := flag.NewFlagSet("relay create", flag.ExitOnError)
-		sourcePort := fs.Int("source-port", 0, "源端口")
-		targetPort := fs.Int("target-port", 0, "目标端口")
+		aPort := fs.Int("aport", 0, "A端对外端口")
+		bPort := fs.Int("bport", 0, "B端服务端口")
 		protocol := fs.String("protocol", "tcp", "协议")
-		targetIP := fs.String("target-ip", "127.0.0.1", "目标 IP")
-		sourceIP := fs.String("source-ip", "0.0.0.0", "源 IP")
+		bIP := fs.String("bip", "127.0.0.1", "B端服务 IP")
+		aIP := fs.String("aip", "0.0.0.0", "A端绑定 IP")
 		fs.Parse(args[2:])
-		if *sourcePort == 0 || *targetPort == 0 {
-			fmt.Fprintln(os.Stderr, "错误: -source-port 和 -target-port 必填")
+		if *aPort == 0 || *bPort == 0 {
+			fmt.Fprintln(os.Stderr, "错误: -aport 和 -bport 必填")
 			os.Exit(1)
 		}
 		resp, err := api("POST", "/api/v1/relay", map[string]any{
-			"source_client_id": source, "target_client_id": target,
-			"source_port": *sourcePort, "target_port": *targetPort,
-			"protocol": *protocol, "target_local_ip": *targetIP, "source_local_ip": *sourceIP,
+			"source_client_id": aSide, "target_client_id": bSide,
+			"source_port": *aPort, "target_port": *bPort,
+			"protocol": *protocol, "target_local_ip": *bIP, "source_local_ip": *aIP,
 		})
 		fatalOn(err)
 		print(resp)
 
 	case "close":
 		if len(args) < 1 {
-			fmt.Fprintln(os.Stderr, "用法: bbgrid-cli relay close <session-id>")
+			fmt.Fprintln(os.Stderr, "用法: aether-cli relay close <session-id>")
 			os.Exit(1)
 		}
 		resp, err := api("DELETE", "/api/v1/relay/"+args[0], nil)
@@ -645,7 +647,7 @@ func cmdRelay(args []string) {
 
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", sub)
-		fmt.Fprintln(os.Stderr, "用法: bbgrid-cli relay <list|create|close>")
+		fmt.Fprintln(os.Stderr, "用法: aether-cli relay <list|create|close>")
 		os.Exit(1)
 	}
 }
@@ -735,7 +737,7 @@ func cmdRegister(args []string) {
 
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", sub)
-		fmt.Fprintln(os.Stderr, "用法: bbgrid-cli register <apply|approve|revoke|pending|list>")
+		fmt.Fprintln(os.Stderr, "用法: aether-cli register <apply|approve|revoke|pending|list>")
 		os.Exit(1)
 	}
 }
@@ -751,11 +753,15 @@ func cmdNamespace(args []string) {
 	case "list":
 		resp, err := api("GET", "/api/v1/namespaces", nil)
 		fatalOn(err)
-		print(resp)
+		if jsonOutput {
+			printJSON(resp)
+			return
+		}
+		printNamespaceList(resp)
 
 	case "info":
 		if len(rest) < 1 {
-			fmt.Fprintln(os.Stderr, "用法: bbgrid-cli namespace info <name>")
+			fmt.Fprintln(os.Stderr, "用法: aether-cli namespace info <name>")
 			os.Exit(1)
 		}
 		resp, err := api("GET", "/api/v1/namespaces/"+rest[0], nil)
@@ -764,7 +770,7 @@ func cmdNamespace(args []string) {
 
 	case "clients":
 		if len(rest) < 1 {
-			fmt.Fprintln(os.Stderr, "用法: bbgrid-cli namespace clients <name>")
+			fmt.Fprintln(os.Stderr, "用法: aether-cli namespace clients <name>")
 			os.Exit(1)
 		}
 		resp, err := api("GET", "/api/v1/namespaces/"+rest[0]+"/clients", nil)
@@ -773,7 +779,7 @@ func cmdNamespace(args []string) {
 
 	case "assign":
 		if len(rest) < 3 {
-			fmt.Fprintln(os.Stderr, "用法: bbgrid-cli namespace assign <client-id> <namespace> <role>")
+			fmt.Fprintln(os.Stderr, "用法: aether-cli namespace assign <client-id> <namespace> <role>")
 			os.Exit(1)
 		}
 		resp, err := api("POST", "/api/v1/namespaces/assign", map[string]string{
@@ -784,17 +790,17 @@ func cmdNamespace(args []string) {
 
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", sub)
-		fmt.Fprintln(os.Stderr, "用法: bbgrid-cli namespace <list|info|clients|assign>")
+		fmt.Fprintln(os.Stderr, "用法: aether-cli namespace <list|info|clients|assign>")
 		os.Exit(1)
 	}
 }
 
 func cmdSync() {
-	resp, err := api("GET", "/api/v1/sync", nil)
+	resp, err := api("GET", "/api/v1/runtime/capabilities", nil)
 	fatalOn(err)
 
 	home := getHomeDir()
-	syncFile := filepath.Join(home, ".bbgrid_sync.json")
+	syncFile := filepath.Join(home, ".aether_sync.json")
 	os.WriteFile(syncFile, resp.Data, 0644)
 
 	if jsonOutput {
@@ -802,31 +808,24 @@ func cmdSync() {
 		return
 	}
 
-	var data struct {
-		Plugins []struct {
-			PluginID string `json:"plugin_id"`
-			Actions  []struct {
-				Name        string `json:"name"`
-				Description string `json:"description,omitempty"`
-			} `json:"actions"`
-		} `json:"plugins"`
+	var caps []struct {
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
 	}
-	unmarshal(resp.Data, &data)
+	unmarshal(resp.Data, &caps)
 
-	if len(data.Plugins) == 0 {
+	if len(caps) == 0 {
 		fmt.Println("没有可用操作")
 		return
 	}
 
-	for _, p := range data.Plugins {
-		fmt.Printf("[%s]\n", p.PluginID)
-		for _, a := range p.Actions {
-			desc := a.Description
-			if desc == "" {
-				desc = "-"
-			}
-			fmt.Printf("  %-20s %s\n", a.Name, desc)
+	fmt.Println("可用操作:")
+	for _, c := range caps {
+		desc := c.Description
+		if desc == "" {
+			desc = "-"
 		}
+		fmt.Printf("  %-20s %s\n", c.Name, desc)
 	}
 }
 
@@ -842,13 +841,13 @@ func cmdRun(args []string) {
 
 	for _, arg := range args[1:] {
 		if !strings.Contains(arg, "=") && filePath == "" {
-			// 没有 = 号，当作文件路径
 			filePath = arg
 			continue
 		}
 		parts := strings.SplitN(arg, "=", 2)
 		if len(parts) == 2 {
-			params[parts[0]] = parts[1]
+			key := strings.TrimLeft(parts[0], "-")
+			params[key] = parts[1]
 		}
 	}
 
@@ -862,20 +861,22 @@ func cmdRun(args []string) {
 		return
 	}
 
-	// 文件下载走特殊处理
+	// 文件下载通过 /runtime/call 获取下载 URL，再请求下载
 	if action == "file.pull" {
 		filename, _ := params["filename"].(string)
-		if filename == "" {
-			fatal("文件下载需要 filename 参数")
+		clientID, _ := params["client_id"].(string)
+		if filename == "" || clientID == "" {
+			fatal("用法: aether-cli run file.pull client_id=<id> filename=<文件>")
 		}
-		err := apiDownload(params, filename)
+		err := apiDownloadStream("file.pull", map[string]any{"path": filename}, filepath.Base(filename))
 		if err != nil {
-			fatal("请求失败: %v", err)
+			fatal("下载失败: %v", err)
 		}
 		return
 	}
 
-	resp, err := api("POST", "/api/v1/run", map[string]any{
+	// 使用新接口 /runtime/call
+	resp, err := api("POST", "/api/v1/runtime/call", map[string]any{
 		"action": action, "params": params,
 	})
 	if err != nil {
@@ -907,32 +908,27 @@ func cmdTask(args []string) {
 
 func showActions(input string) {
 	home := getHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".bbgrid_sync.json"))
+	data, err := os.ReadFile(filepath.Join(home, ".aether_sync.json"))
 	if err != nil {
 		return
 	}
 	var syncData struct {
-		Plugins []struct {
-			PluginID string `json:"plugin_id"`
-			Actions  []struct {
-				Name        string `json:"name"`
-				Description string `json:"description,omitempty"`
-			} `json:"actions"`
-		} `json:"plugins"`
+		Capabilities []struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
+			Transport   string `json:"transport"`
+		} `json:"data"`
 	}
-	if json.Unmarshal(data, &syncData) != nil || len(syncData.Plugins) == 0 {
+	if json.Unmarshal(data, &syncData) != nil || len(syncData.Capabilities) == 0 {
 		return
 	}
 	fmt.Fprintln(os.Stderr, "\n可用操作:")
-	for _, p := range syncData.Plugins {
-		fmt.Fprintf(os.Stderr, "  [%s]\n", p.PluginID)
-		for _, a := range p.Actions {
-			desc := a.Description
-			if desc == "" {
-				desc = "-"
-			}
-			fmt.Fprintf(os.Stderr, "    %-20s %s\n", a.Name, desc)
+	for _, c := range syncData.Capabilities {
+		desc := c.Description
+		if desc == "" {
+			desc = "-"
 		}
+		fmt.Fprintf(os.Stderr, "  %-20s %-10s %s\n", c.Name, c.Transport, desc)
 	}
 	fmt.Fprintln(os.Stderr)
 }
@@ -967,7 +963,7 @@ func api(method, path string, body interface{}) (*Response, error) {
 	}
 	if cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	} else {
+	} else if cfg.APIKey != "" {
 		req.Header.Set("X-API-KEY", cfg.APIKey)
 	}
 	if body != nil {
@@ -984,6 +980,39 @@ func api(method, path string, body interface{}) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Token 过期或无效时，自动用 API key 重试
+	if resp.StatusCode == http.StatusUnauthorized && cfg.Token != "" && cfg.APIKey != "" {
+		cfg.Token = ""
+		saveConfig(configPath, cfg)
+
+		var retryReader io.Reader
+		if body != nil {
+			data, _ := json.Marshal(body)
+			retryReader = bytes.NewReader(data)
+		}
+		retryReq, err := http.NewRequest(method, cfg.Server+path, retryReader)
+		if err != nil {
+			return nil, err
+		}
+		retryReq.Header.Set("X-API-KEY", cfg.APIKey)
+		if body != nil {
+			retryReq.Header.Set("Content-Type", "application/json")
+		}
+
+		resp2, err := httpClient.Do(retryReq)
+		if err != nil {
+			return nil, err
+		}
+		defer resp2.Body.Close()
+
+		respBody, err = io.ReadAll(resp2.Body)
+		if err != nil {
+			return nil, err
+		}
+		resp = resp2
+	}
+
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
@@ -1014,13 +1043,18 @@ func apiUpload(action, filePath string, params map[string]any) (*Response, error
 	}
 	writer.Close()
 
-	// 构建 URL，参数放在 query 中
-	url := cfg.Server + "/api/v1/run?action=" + action
-	for k, v := range params {
-		url += "&" + k + "=" + fmt.Sprintf("%v", v)
+	u, err := neturl.Parse(cfg.Server + "/api/v1/runtime/call")
+	if err != nil {
+		return nil, err
 	}
+	q := u.Query()
+	q.Set("action", action)
+	for k, v := range params {
+		q.Set(k, fmt.Sprintf("%v", v))
+	}
+	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest("POST", url, body)
+	req, err := http.NewRequest("POST", u.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -1050,15 +1084,10 @@ func apiUpload(action, filePath string, params map[string]any) (*Response, error
 	return &result, nil
 }
 
-// apiDownload 下载文件
-func apiDownload(params map[string]any, saveName string) error {
-	reqBody := map[string]any{
-		"action": "file.pull",
-		"params": params,
-	}
-	data, _ := json.Marshal(reqBody)
-
-	req, err := http.NewRequest("POST", cfg.Server+"/api/v1/run", bytes.NewReader(data))
+// apiDownloadURL 使用服务端返回的 URL 下载文件
+func apiDownloadStream(action string, params map[string]any, saveName string) error {
+	body, _ := json.Marshal(map[string]any{"action": action, "params": params})
+	req, err := http.NewRequest("POST", cfg.Server+"/api/v1/runtime/call", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -1080,7 +1109,6 @@ func apiDownload(params map[string]any, saveName string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// 保存文件
 	out, err := os.Create(saveName)
 	if err != nil {
 		return fmt.Errorf("创建文件失败: %w", err)
@@ -1114,8 +1142,25 @@ func loadConfig(path string) (*CLIConfig, error) {
 	}
 	var cfg CLIConfig
 	json.Unmarshal(data, &cfg)
-	cfg.Server = strings.TrimRight(cfg.Server, "/")
+	cfg.Server = normalizeServerURL(cfg.Server)
 	return &cfg, nil
+}
+
+// normalizeServerURL 给没有 scheme 的地址补上 https://
+func normalizeServerURL(u string) string {
+	u = strings.TrimRight(u, "/")
+	if u == "" {
+		return u
+	}
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	return "https://" + u
+}
+
+func saveConfig(path string, cfg *CLIConfig) {
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile(path, data, 0600)
 }
 
 func unmarshal(data json.RawMessage, v interface{}) {
@@ -1134,6 +1179,20 @@ func print(resp *Response) {
 	if len(resp.Data) > 0 {
 		var data interface{}
 		unmarshal(resp.Data, &data)
+		// ActionResult 包装：提取内层 code/msg/data
+		if m, ok := data.(map[string]interface{}); ok {
+			msg, _ := m["msg"].(string)
+			inner, hasData := m["data"]
+
+			if msg != "" {
+				fmt.Printf("msg:\t%s\n", msg)
+			}
+			if !hasData || inner == nil {
+				return
+			}
+			printData(inner)
+			return
+		}
 		printData(data)
 	} else {
 		fmt.Println("成功")
@@ -1156,22 +1215,6 @@ func printData(data interface{}) {
 	}
 }
 
-func printMap(m map[string]interface{}) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	for k, v := range m {
-		switch val := v.(type) {
-		case string:
-			if len(val) > 100 {
-				val = val[:50] + "..." + val[len(val)-20:]
-			}
-			fmt.Fprintf(w, "%s:\t%s\n", k, val)
-		default:
-			fmt.Fprintf(w, "%s:\t%v\n", k, v)
-		}
-	}
-	w.Flush()
-}
-
 func printList(l []interface{}) {
 	if len(l) == 0 {
 		fmt.Println("(空)")
@@ -1180,12 +1223,187 @@ func printList(l []interface{}) {
 
 	// 检查是否是 map 列表
 	if _, ok := l[0].(map[string]interface{}); ok {
+		// 检查是否有 client_id 字段，按 client_id 分组
+		if hasField(l, "client_id") {
+			printGroupedByClient(l)
+			return
+		}
 		printTable(l)
 		return
 	}
 
 	for i, v := range l {
 		fmt.Printf("[%d] %v\n", i, v)
+	}
+}
+
+// hasField 检查列表中的 map 是否有指定字段
+func hasField(l []interface{}, field string) bool {
+	for _, item := range l {
+		if m, ok := item.(map[string]interface{}); ok {
+			if _, exists := m[field]; exists {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// printGroupedByClient 按 client_id 分组展示
+func printGroupedByClient(l []interface{}) {
+	// 按 client_id 分组
+	groups := make(map[string][]map[string]interface{})
+	for _, item := range l {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		clientID, _ := m["client_id"].(string)
+		if clientID == "" {
+			clientID = "(未知)"
+		}
+		groups[clientID] = append(groups[clientID], m)
+	}
+
+	for clientID, items := range groups {
+		fmt.Printf("%s:\n", clientID)
+		// 去掉 client_id 列，只显示其他字段
+		cleaned := make([]interface{}, 0, len(items))
+		for _, m := range items {
+			cp := make(map[string]interface{}, len(m)-1)
+			for k, v := range m {
+				if k != "client_id" {
+					cp[k] = v
+				}
+			}
+			cleaned = append(cleaned, cp)
+		}
+		if len(cleaned) == 0 {
+			fmt.Println("  (无)")
+			continue
+		}
+		// 如果只剩一个 map 且都是简单字段，用 key: value 格式
+		if len(cleaned) == 1 {
+			if m, ok := cleaned[0].(map[string]interface{}); ok {
+				printMapIndented(m, "  ")
+				continue
+			}
+		}
+		// 否则用表格
+		printTableIndented(cleaned, "  ")
+	}
+	fmt.Println()
+}
+
+func printMapIndented(m map[string]interface{}, indent string) {
+	for k, v := range m {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			fmt.Printf("%s%s:\n", indent, k)
+			printMapIndented(val, indent+"  ")
+		case []interface{}:
+			if len(val) == 0 {
+				fmt.Printf("%s%s: (空)\n", indent, k)
+			} else {
+				fmt.Printf("%s%s:\n", indent, k)
+				for _, item := range val {
+					fmt.Printf("%s  %v\n", indent, item)
+				}
+			}
+		default:
+			fmt.Printf("%s%s: %v\n", indent, k, formatCell(k, v))
+		}
+	}
+}
+
+func printTableIndented(l []interface{}, indent string) {
+	if len(l) == 0 {
+		return
+	}
+	first := l[0].(map[string]interface{})
+	keys := make([]string, 0, len(first))
+	for k := range first {
+		keys = append(keys, k)
+	}
+
+	widths := make(map[string]int)
+	for _, k := range keys {
+		widths[k] = len(k)
+	}
+	for _, item := range l {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, k := range keys {
+			cell := formatCell(k, m[k])
+			w := len(cell)
+			if w > widths[k] {
+				widths[k] = w
+			}
+		}
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	for _, k := range keys {
+		fmt.Fprintf(w, "%s%-*s\t", indent, widths[k], k)
+	}
+	fmt.Fprintln(w)
+	for _, k := range keys {
+		fmt.Fprintf(w, "%s%s\t", indent, strings.Repeat("-", widths[k]))
+	}
+	fmt.Fprintln(w)
+
+	for _, item := range l {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, k := range keys {
+			fmt.Fprintf(w, "%s%-*s\t", indent, widths[k], formatCell(k, m[k]))
+		}
+		fmt.Fprintln(w)
+	}
+	w.Flush()
+}
+
+func printMap(m map[string]interface{}) {
+	simpleKeys := []string{}
+	for k, v := range m {
+		switch v.(type) {
+		case string, float64, bool, int, int64:
+			simpleKeys = append(simpleKeys, k)
+		}
+	}
+	for _, k := range simpleKeys {
+		switch val := m[k].(type) {
+		case string:
+			display := val
+			if len(display) > 100 {
+				display = display[:50] + "..." + display[len(display)-20:]
+			}
+			fmt.Printf("%s:\t%s\n", k, display)
+		case float64:
+			if strings.Contains(strings.ToLower(k), "size") {
+				fmt.Printf("%s:\t%s\n", k, humanSize(int64(val)))
+			} else {
+				fmt.Printf("%s:\t%v\n", k, val)
+			}
+		default:
+			fmt.Printf("%s:\t%v\n", k, m[k])
+		}
+		delete(m, k)
+	}
+	for k, v := range m {
+		if arr, ok := v.([]interface{}); ok {
+			fmt.Printf("%s:\n", k)
+			printList(arr)
+		} else if subMap, ok := v.(map[string]interface{}); ok {
+			fmt.Printf("%s:\n", k)
+			printMap(subMap)
+		} else {
+			fmt.Printf("%s:\t%v\n", k, v)
+		}
 	}
 }
 
@@ -1212,14 +1430,14 @@ func printTable(l []interface{}) {
 			continue
 		}
 		for _, k := range keys {
-			w := len(fmt.Sprintf("%v", m[k]))
+			cell := formatCell(k, m[k])
+			w := len(cell)
 			if w > widths[k] {
 				widths[k] = w
 			}
 		}
 	}
 
-	// 打印表头
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	for _, k := range keys {
 		fmt.Fprintf(w, "%-*s\t", widths[k], k)
@@ -1230,16 +1448,45 @@ func printTable(l []interface{}) {
 	}
 	fmt.Fprintln(w)
 
-	// 打印数据
 	for _, item := range l {
 		m, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
 		for _, k := range keys {
-			fmt.Fprintf(w, "%-*v\t", widths[k], m[k])
+			fmt.Fprintf(w, "%-*s\t", widths[k], formatCell(k, m[k]))
 		}
 		fmt.Fprintln(w)
+	}
+	w.Flush()
+}
+
+func printNamespaceList(resp *Response) {
+	var data struct {
+		Namespaces []struct {
+			Name        string  `json:"name"`
+			Description string  `json:"description"`
+			Type        string  `json:"type"`
+			Clients     []any   `json:"clients"`
+			CreatedAt   float64 `json:"created_at"`
+		} `json:"namespaces"`
+	}
+	unmarshal(resp.Data, &data)
+
+	if len(data.Namespaces) == 0 {
+		fmt.Println("没有命名空间")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "名称\t类型\t客户端数\t描述\t创建时间")
+	fmt.Fprintln(w, "----\t----\t--------\t----\t--------")
+	for _, ns := range data.Namespaces {
+		created := ""
+		if ns.CreatedAt > 0 {
+			created = time.Unix(int64(ns.CreatedAt), 0).Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", ns.Name, ns.Type, len(ns.Clients), ns.Description, created)
 	}
 	w.Flush()
 }
@@ -1294,6 +1541,50 @@ func printRegisterList(resp *Response) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", c.ClientID, c.Status, c.Namespace, c.Role, created)
 	}
 	w.Flush()
+}
+
+func formatCell(key string, val interface{}) string {
+	if strings.Contains(strings.ToLower(key), "size") {
+		switch v := val.(type) {
+		case float64:
+			return humanSize(int64(v))
+		case int:
+			return humanSize(int64(v))
+		case int64:
+			return humanSize(v)
+		}
+	}
+	switch v := val.(type) {
+	case map[string]interface{}:
+		// map → key=value, key2=value2
+		parts := make([]string, 0, len(v))
+		for k, val := range v {
+			parts = append(parts, fmt.Sprintf("%s=%v", k, val))
+		}
+		return strings.Join(parts, ", ")
+	case []interface{}:
+		// array → 元素用逗号分隔
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			parts = append(parts, fmt.Sprintf("%v", item))
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+func humanSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 func calcMD5(path string) string {

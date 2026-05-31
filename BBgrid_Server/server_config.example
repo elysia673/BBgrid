@@ -1,0 +1,23 @@
+{
+  "addr": ":9909",
+  "domain": "example.com",
+  "tunnel_port": 9908,
+  "public_ip": "",
+  "data_dir": "data",
+  "log_path": "data/server.log",
+  "api_key": "your-api-key-here",
+  "client_token": "your-client-token-here",
+  "tls_cert": "",
+  "tls_key": "",
+  "plugins": {
+    "file": {
+      "enabled": true,
+      "config": {
+        "data_dir": "data/data"
+      }
+    },
+    "latency": { "enabled": true },
+    "tag": { "enabled": true },
+    "persist": { "enabled": true }
+  }
+}

@@ -856,7 +856,7 @@ var File_common_plugin_proto_plugin_proto protoreflect.FileDescriptor
 
 const file_common_plugin_proto_plugin_proto_rawDesc = "" +
 	"\n" +
-	" common/plugin/proto/plugin.proto\x12\raether.plugin\"w\n" +
+	" common/plugin/proto/plugin.proto\x12\rbbgrid.plugin\"w\n" +
 	"\x10SubscribeRequest\x12\x1b\n" +
 	"\tplugin_id\x18\x01 \x01(\tR\bpluginId\x12%\n" +
 	"\x0eresource_types\x18\x02 \x03(\tR\rresourceTypes\x12\x1f\n" +
@@ -864,13 +864,13 @@ const file_common_plugin_proto_plugin_proto_rawDesc = "" +
 	"eventTypes\"\x8a\x01\n" +
 	"\n" +
 	"EventBatch\x122\n" +
-	"\x06events\x18\x01 \x03(\v2\x1a.aether.plugin.PluginEventR\x06events\x12H\n" +
-	"\x10execute_requests\x18\x02 \x03(\v2\x1d.aether.plugin.ExecuteRequestR\x0fexecuteRequests\"\xc8\x01\n" +
+	"\x06events\x18\x01 \x03(\v2\x1a.bbgrid.plugin.PluginEventR\x06events\x12H\n" +
+	"\x10execute_requests\x18\x02 \x03(\v2\x1d.bbgrid.plugin.ExecuteRequestR\x0fexecuteRequests\"\xc8\x01\n" +
 	"\vPluginEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x03R\bsequence\x12\x1c\n" +
 	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x126\n" +
-	"\bresource\x18\x04 \x01(\v2\x1a.aether.plugin.ResourceKeyR\bresource\x12\x1d\n" +
+	"\bresource\x18\x04 \x01(\v2\x1a.bbgrid.plugin.ResourceKeyR\bresource\x12\x1d\n" +
 	"\n" +
 	"event_type\x18\x05 \x01(\tR\teventType\x12\x18\n" +
 	"\apayload\x18\x06 \x01(\fR\apayload\"S\n" +
@@ -880,15 +880,15 @@ const file_common_plugin_proto_plugin_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\"a\n" +
 	"\x0ePublishRequest\x12\x1b\n" +
 	"\tplugin_id\x18\x01 \x01(\tR\bpluginId\x122\n" +
-	"\x06events\x18\x02 \x03(\v2\x1a.aether.plugin.PluginEventR\x06events\"A\n" +
+	"\x06events\x18\x02 \x03(\v2\x1a.bbgrid.plugin.PluginEventR\x06events\"A\n" +
 	"\x0fPublishResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"\xc3\x01\n" +
 	"\x0fRegisterRequest\x12\x1b\n" +
 	"\tplugin_id\x18\x01 \x01(\tR\bpluginId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12=\n" +
-	"\fcapabilities\x18\x03 \x03(\v2\x19.aether.plugin.CapabilityR\fcapabilities\x12:\n" +
-	"\aactions\x18\x04 \x03(\v2 .aether.plugin.ActionDeclarationR\aactions\"B\n" +
+	"\fcapabilities\x18\x03 \x03(\v2\x19.bbgrid.plugin.CapabilityR\fcapabilities\x12:\n" +
+	"\aactions\x18\x04 \x03(\v2 .bbgrid.plugin.ActionDeclarationR\aactions\"B\n" +
 	"\x10RegisterResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"t\n" +
@@ -916,11 +916,11 @@ const file_common_plugin_proto_plugin_proto_rawDesc = "" +
 	"\vserver_time\x18\x01 \x01(\x03R\n" +
 	"serverTime2\x8b\x03\n" +
 	"\rPluginService\x12I\n" +
-	"\tSubscribe\x12\x1f.aether.plugin.SubscribeRequest\x1a\x19.aether.plugin.EventBatch0\x01\x12H\n" +
-	"\aPublish\x12\x1d.aether.plugin.PublishRequest\x1a\x1e.aether.plugin.PublishResponse\x12K\n" +
-	"\bRegister\x12\x1e.aether.plugin.RegisterRequest\x1a\x1f.aether.plugin.RegisterResponse\x12H\n" +
-	"\aExecute\x12\x1d.aether.plugin.ExecuteRequest\x1a\x1e.aether.plugin.ExecuteResponse\x12N\n" +
-	"\tHeartbeat\x12\x1f.aether.plugin.HeartbeatRequest\x1a .aether.plugin.HeartbeatResponseB\x1fZ\x1dBBgrid/common/plugin/proto/pbb\x06proto3"
+	"\tSubscribe\x12\x1f.bbgrid.plugin.SubscribeRequest\x1a\x19.bbgrid.plugin.EventBatch0\x01\x12H\n" +
+	"\aPublish\x12\x1d.bbgrid.plugin.PublishRequest\x1a\x1e.bbgrid.plugin.PublishResponse\x12K\n" +
+	"\bRegister\x12\x1e.bbgrid.plugin.RegisterRequest\x1a\x1f.bbgrid.plugin.RegisterResponse\x12H\n" +
+	"\aExecute\x12\x1d.bbgrid.plugin.ExecuteRequest\x1a\x1e.bbgrid.plugin.ExecuteResponse\x12N\n" +
+	"\tHeartbeat\x12\x1f.bbgrid.plugin.HeartbeatRequest\x1a .bbgrid.plugin.HeartbeatResponseB\x1fZ\x1dBBgrid/common/plugin/proto/pbb\x06proto3"
 
 var (
 	file_common_plugin_proto_plugin_proto_rawDescOnce sync.Once
@@ -936,38 +936,38 @@ func file_common_plugin_proto_plugin_proto_rawDescGZIP() []byte {
 
 var file_common_plugin_proto_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_common_plugin_proto_plugin_proto_goTypes = []any{
-	(*SubscribeRequest)(nil),  // 0: aether.plugin.SubscribeRequest
-	(*EventBatch)(nil),        // 1: aether.plugin.EventBatch
-	(*PluginEvent)(nil),       // 2: aether.plugin.PluginEvent
-	(*ResourceKey)(nil),       // 3: aether.plugin.ResourceKey
-	(*PublishRequest)(nil),    // 4: aether.plugin.PublishRequest
-	(*PublishResponse)(nil),   // 5: aether.plugin.PublishResponse
-	(*RegisterRequest)(nil),   // 6: aether.plugin.RegisterRequest
-	(*RegisterResponse)(nil),  // 7: aether.plugin.RegisterResponse
-	(*Capability)(nil),        // 8: aether.plugin.Capability
-	(*ActionDeclaration)(nil), // 9: aether.plugin.ActionDeclaration
-	(*ExecuteRequest)(nil),    // 10: aether.plugin.ExecuteRequest
-	(*ExecuteResponse)(nil),   // 11: aether.plugin.ExecuteResponse
-	(*HeartbeatRequest)(nil),  // 12: aether.plugin.HeartbeatRequest
-	(*HeartbeatResponse)(nil), // 13: aether.plugin.HeartbeatResponse
+	(*SubscribeRequest)(nil),  // 0: bbgrid.plugin.SubscribeRequest
+	(*EventBatch)(nil),        // 1: bbgrid.plugin.EventBatch
+	(*PluginEvent)(nil),       // 2: bbgrid.plugin.PluginEvent
+	(*ResourceKey)(nil),       // 3: bbgrid.plugin.ResourceKey
+	(*PublishRequest)(nil),    // 4: bbgrid.plugin.PublishRequest
+	(*PublishResponse)(nil),   // 5: bbgrid.plugin.PublishResponse
+	(*RegisterRequest)(nil),   // 6: bbgrid.plugin.RegisterRequest
+	(*RegisterResponse)(nil),  // 7: bbgrid.plugin.RegisterResponse
+	(*Capability)(nil),        // 8: bbgrid.plugin.Capability
+	(*ActionDeclaration)(nil), // 9: bbgrid.plugin.ActionDeclaration
+	(*ExecuteRequest)(nil),    // 10: bbgrid.plugin.ExecuteRequest
+	(*ExecuteResponse)(nil),   // 11: bbgrid.plugin.ExecuteResponse
+	(*HeartbeatRequest)(nil),  // 12: bbgrid.plugin.HeartbeatRequest
+	(*HeartbeatResponse)(nil), // 13: bbgrid.plugin.HeartbeatResponse
 }
 var file_common_plugin_proto_plugin_proto_depIdxs = []int32{
-	2,  // 0: aether.plugin.EventBatch.events:type_name -> aether.plugin.PluginEvent
-	10, // 1: aether.plugin.EventBatch.execute_requests:type_name -> aether.plugin.ExecuteRequest
-	3,  // 2: aether.plugin.PluginEvent.resource:type_name -> aether.plugin.ResourceKey
-	2,  // 3: aether.plugin.PublishRequest.events:type_name -> aether.plugin.PluginEvent
-	8,  // 4: aether.plugin.RegisterRequest.capabilities:type_name -> aether.plugin.Capability
-	9,  // 5: aether.plugin.RegisterRequest.actions:type_name -> aether.plugin.ActionDeclaration
-	0,  // 6: aether.plugin.PluginService.Subscribe:input_type -> aether.plugin.SubscribeRequest
-	4,  // 7: aether.plugin.PluginService.Publish:input_type -> aether.plugin.PublishRequest
-	6,  // 8: aether.plugin.PluginService.Register:input_type -> aether.plugin.RegisterRequest
-	10, // 9: aether.plugin.PluginService.Execute:input_type -> aether.plugin.ExecuteRequest
-	12, // 10: aether.plugin.PluginService.Heartbeat:input_type -> aether.plugin.HeartbeatRequest
-	1,  // 11: aether.plugin.PluginService.Subscribe:output_type -> aether.plugin.EventBatch
-	5,  // 12: aether.plugin.PluginService.Publish:output_type -> aether.plugin.PublishResponse
-	7,  // 13: aether.plugin.PluginService.Register:output_type -> aether.plugin.RegisterResponse
-	11, // 14: aether.plugin.PluginService.Execute:output_type -> aether.plugin.ExecuteResponse
-	13, // 15: aether.plugin.PluginService.Heartbeat:output_type -> aether.plugin.HeartbeatResponse
+	2,  // 0: bbgrid.plugin.EventBatch.events:type_name -> bbgrid.plugin.PluginEvent
+	10, // 1: bbgrid.plugin.EventBatch.execute_requests:type_name -> bbgrid.plugin.ExecuteRequest
+	3,  // 2: bbgrid.plugin.PluginEvent.resource:type_name -> bbgrid.plugin.ResourceKey
+	2,  // 3: bbgrid.plugin.PublishRequest.events:type_name -> bbgrid.plugin.PluginEvent
+	8,  // 4: bbgrid.plugin.RegisterRequest.capabilities:type_name -> bbgrid.plugin.Capability
+	9,  // 5: bbgrid.plugin.RegisterRequest.actions:type_name -> bbgrid.plugin.ActionDeclaration
+	0,  // 6: bbgrid.plugin.PluginService.Subscribe:input_type -> bbgrid.plugin.SubscribeRequest
+	4,  // 7: bbgrid.plugin.PluginService.Publish:input_type -> bbgrid.plugin.PublishRequest
+	6,  // 8: bbgrid.plugin.PluginService.Register:input_type -> bbgrid.plugin.RegisterRequest
+	10, // 9: bbgrid.plugin.PluginService.Execute:input_type -> bbgrid.plugin.ExecuteRequest
+	12, // 10: bbgrid.plugin.PluginService.Heartbeat:input_type -> bbgrid.plugin.HeartbeatRequest
+	1,  // 11: bbgrid.plugin.PluginService.Subscribe:output_type -> bbgrid.plugin.EventBatch
+	5,  // 12: bbgrid.plugin.PluginService.Publish:output_type -> bbgrid.plugin.PublishResponse
+	7,  // 13: bbgrid.plugin.PluginService.Register:output_type -> bbgrid.plugin.RegisterResponse
+	11, // 14: bbgrid.plugin.PluginService.Execute:output_type -> bbgrid.plugin.ExecuteResponse
+	13, // 15: bbgrid.plugin.PluginService.Heartbeat:output_type -> bbgrid.plugin.HeartbeatResponse
 	11, // [11:16] is the sub-list for method output_type
 	6,  // [6:11] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name

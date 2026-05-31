@@ -260,7 +260,7 @@ func (h *Handler) createRestartScript(execPath, tmpPath string) error {
 
 	switch runtime.GOOS {
 	case "windows":
-		scriptPath = filepath.Join(execDir, "bbgrid_restart.bat")
+		scriptPath = filepath.Join(execDir, "aether_restart.bat")
 		scriptContent = fmt.Sprintf(`@echo off
 timeout /t 2 /nobreak >nul
 move /y "%s" "%s"
@@ -268,7 +268,7 @@ start "" "%s"
 del "%%~f0"
 `, filepath.Clean(tmpPath), filepath.Clean(execPath), filepath.Clean(execPath))
 	default: // linux, darwin
-		scriptPath = filepath.Join(execDir, "bbgrid_restart.sh")
+		scriptPath = filepath.Join(execDir, "aether_restart.sh")
 		scriptContent = fmt.Sprintf(`#!/bin/sh
 sleep 2
 mv %s %s
@@ -606,8 +606,8 @@ func (h *Handler) runTunnelUDP(ctx context.Context, serverHost string, remotePor
 		alog.Info(alog.CatTunnel, "已连接到 UDP 隧道",
 			"local", conn.LocalAddr(), "remote", conn.RemoteAddr())
 
-		// 发送认证标记 "TUNNEL\n"
-		if _, err := conn.Write([]byte("TUNNEL\n")); err != nil {
+		// 发送认证标记 "TUNL"
+		if _, err := conn.Write([]byte("TUNL")); err != nil {
 			alog.Error(alog.CatTunnel, "UDP 隧道认证标记发送失败", "error", err)
 			conn.Close()
 			time.Sleep(1 * time.Second)

@@ -69,6 +69,7 @@ const (
 	CatConfig Category = "CONFIG"
 	CatUpdate Category = "UPDATE"
 	CatSystem Category = "SYSTEM"
+	CatWS     Category = "WS"
 )
 
 // Format 日志输出格式
@@ -108,6 +109,7 @@ type Logger struct {
 	buf     *bufio.Writer
 	flushMu sync.Mutex
 	pid     int
+	flushStop chan struct{} // 停止 flush goroutine
 }
 
 var defaultLogger = New(os.Stderr, INFO, FormatText)
@@ -157,6 +159,12 @@ func (l *Logger) SetFile(path string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// 停止旧的 flush goroutine
+	if l.flushStop != nil {
+		close(l.flushStop)
+		l.flushStop = nil
+	}
+
 	if l.file != nil {
 		if l.buf != nil {
 			l.buf.Flush()
@@ -182,16 +190,23 @@ func (l *Logger) SetFile(path string) error {
 	mw := io.MultiWriter(l.output, l.buf)
 	l.output = mw
 
-	// 定时 flush
+	// 启动新的 flush goroutine，带 stop 信号
+	l.flushStop = make(chan struct{})
+	stopCh := l.flushStop
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			l.flushMu.Lock()
-			if l.buf != nil {
-				l.buf.Flush()
+		for {
+			select {
+			case <-ticker.C:
+				l.flushMu.Lock()
+				if l.buf != nil {
+					l.buf.Flush()
+				}
+				l.flushMu.Unlock()
+			case <-stopCh:
+				return
 			}
-			l.flushMu.Unlock()
 		}
 	}()
 

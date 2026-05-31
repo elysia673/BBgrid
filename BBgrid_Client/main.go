@@ -19,7 +19,7 @@ var (
 )
 
 func printVersion() {
-	fmt.Printf("BBgrid Client %s (%s) %s\n", Version, GitCommit, BuildTime)
+	fmt.Printf("Aether Client %s (%s) %s\n", Version, GitCommit, BuildTime)
 }
 
 func main() {
@@ -93,7 +93,7 @@ func main() {
 		}
 		serverURL = strings.TrimSuffix(serverURL, "/ws")
 
-		apiServer = NewFileAPIServer(cfg.Files.APIPort, serverURL, cfg.ClientID, cfg.DataDir)
+		apiServer = NewFileAPIServer(cfg.Files.APIPort, serverURL, cfg.ClientID, cfg.DataDir, cfg.ClientToken)
 		if err := apiServer.Start(); err != nil {
 			alog.Fatal(alog.CatSystem, "Failed to start file API server", "error", err)
 		}

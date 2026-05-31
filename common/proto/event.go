@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -32,12 +33,15 @@ func (k ResourceKey) String() string {
 
 // ParseResourceKey 解析资源 key
 func ParseResourceKey(s string) (ResourceKey, error) {
-	var k ResourceKey
-	n, err := fmt.Sscanf(s, "%s/%s/%s", &k.Type, &k.Namespace, &k.Name)
-	if err != nil || n != 3 {
-		return k, fmt.Errorf("invalid resource key: %s", s)
+	parts := strings.SplitN(s, "/", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return ResourceKey{}, fmt.Errorf("invalid resource key: %s", s)
 	}
-	return k, nil
+	return ResourceKey{
+		Type:      parts[0],
+		Namespace: parts[1],
+		Name:      parts[2],
+	}, nil
 }
 
 // ==================== EventType ====================

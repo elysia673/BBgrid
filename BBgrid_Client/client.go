@@ -19,7 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Client 是 BBgrid 客户端，维护与服务器的 WebSocket 连接，
+// Client 是 Aether 客户端，维护与服务器的 WebSocket 连接，
 // 处理注册并将隧道管理委托给 handler 包。
 type Client struct {
 	url            string
@@ -246,9 +246,13 @@ func (c *Client) connectAndServe() error {
 		if err != nil {
 			return fmt.Errorf("load X509 key pair: %w", err)
 		}
+		alog.Info(alog.CatClient, "client certificate loaded", "cert", c.certPath, "key", c.privateKeyPath)
 
 		dialer.TLSClientConfig = &tls.Config{
-			Certificates:       []tls.Certificate{cert},
+			Certificates: []tls.Certificate{cert},
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return &cert, nil
+			},
 			MinVersion:         tls.VersionTLS12,
 			InsecureSkipVerify: c.insecure,
 		}
@@ -265,9 +269,9 @@ func (c *Client) connectAndServe() error {
 		}
 	}
 
-	wsConn, _, err := dialer.Dial(c.url, header)
+	wsConn, resp, err := dialer.Dial(c.url, header)
 	if err != nil {
-		return err
+		return formatHandshakeError(err, resp)
 	}
 
 	// 在启动消息泵之前进行注册。
@@ -302,6 +306,23 @@ func (c *Client) connectAndServe() error {
 	return nil
 }
 
+func formatHandshakeError(err error, resp *http.Response) error {
+	if resp == nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if readErr != nil {
+		return fmt.Errorf("%w (status=%s, read body: %v)", err, resp.Status, readErr)
+	}
+	bodyText := strings.TrimSpace(string(body))
+	if bodyText == "" {
+		return fmt.Errorf("%w (status=%s)", err, resp.Status)
+	}
+	return fmt.Errorf("%w (status=%s, body=%q)", err, resp.Status, bodyText)
+}
+
 // registerRaw 在消息泵启动之前执行注册握手。
 func (c *Client) registerRaw(wsConn *websocket.Conn) error {
 	regMsg := model.WSMessage{
@@ -325,8 +346,18 @@ func (c *Client) registerRaw(wsConn *websocket.Conn) error {
 	}
 
 	var regData model.RegisteredData
-	if dataStr, ok := resp.Data.(string); ok {
-		if err := json.Unmarshal([]byte(dataStr), &regData); err != nil {
+	switch data := resp.Data.(type) {
+	case model.RegisteredData:
+		regData = data
+	case map[string]any:
+		if v, ok := data["client_id"].(string); ok {
+			regData.ClientID = v
+		}
+		if v, ok := data["server_host"].(string); ok {
+			regData.ServerHost = v
+		}
+	case string:
+		if err := json.Unmarshal([]byte(data), &regData); err != nil {
 			return fmt.Errorf("unmarshal registered data: %w", err)
 		}
 	}
