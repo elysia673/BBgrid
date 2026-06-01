@@ -8,10 +8,12 @@
 - **事件总线**: 基于 ResourceKey 的 EventBus 分发，Core 不理解业务逻辑
 - **能力协商**: 插件启动时注册 Capability，即插即用
 - **Provider 体系**: Proxy/Relay 作为独立 Provider 注册到 CapabilityRegistry
+- **期望状态引擎**: ReconcileEngine 双向同步 desired ↔ actual，自动创建/删除
+- **事件驱动触发**: proxy/relay 变化立即触发 Reconcile，不只靠定时器
+- **失败退避**: 创建/删除失败时指数退避（30s → 60s → 120s ... 最大 10min），避免重连风暴
 - **持久化层**: EventStore + SnapshotStore + MetaStore，支持崩溃恢复
-- **最终一致**: Reconcile Loop 自动同步状态
-- **多协议支持**: TCP、UDP、WebSocket 隧道
-- **中继转发**: 源端 → relay server → 目标端，全链路 io.Copy + 半关闭
+- **中继转发**: 源端 → relay server → 目标端，mux + net.Pipe 隔离 + io.Copy + 半关闭
+- **自动恢复**: 重启后 proxy/relay 自动恢复，客户端重连自动补发信号
 - **Namespace 隔离**: permanent / temporary / mediated 三种命名空间
 - **安全认证**: mTLS + JWT Token + API Key 三重认证
 - **Docker 部署**: 自签名/本地证书两种部署脚本
@@ -100,10 +102,20 @@ bbgrid-cli run latency.list
 │                                                                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐    │
 │  │   EventBus   │  │  StateStore  │  │ CapabilityRegistry│    │
-│  │ (事件分发器)  │  │ (状态接口)    │  │ (Provider + Action)│   │
+│  │ (事件分发器)  │  │ (runtime +   │  │ (Provider + Action)│   │
+│  │              │  │  desired)    │  │                   │    │
 │  └──────┬───────┘  └──────────────┘  └───────────────────┘    │
 │         │                                                       │
 │         ▼                                                       │
+│  ┌─────────────────────────────────────────────────────┐      │
+│  │  ReconcileEngine (期望状态引擎)                       │      │
+│  │  ┌────────────┐  ┌────────────┐  ┌──────────────┐  │      │
+│  │  │ 双向同步    │  │ 事件触发    │  │ 失败退避     │  │      │
+│  │  │ create +   │  │ ADDED/     │  │ 30s→60s→...  │  │      │
+│  │  │ delete     │  │ DELETED    │  │ max 10min    │  │      │
+│  │  └────────────┘  └────────────┘  └──────────────┘  │      │
+│  └─────────────────────────────────────────────────────┘      │
+│                                                                 │
 │  ┌─────────────────────────────────────────────────────┐      │
 │  │              StorageManager (持久化层)                │      │
 │  │  EventStore  │  SnapshotStore  │  MetaStore          │      │
@@ -122,22 +134,46 @@ bbgrid-cli run latency.list
 │  persist  状态持久化  │  │  实时推送                  │
 │  tag      标签管理    │  │  隧道配对                  │
 │  file     文件传输    │  │  中继 WS 桥接             │
-│                      │  │                          │
+│                      │  │  客户端重连补发            │
 │  proxy    代理 Provider│  │                          │
 │  relay    中继 Provider│  │                          │
 │                      │  │                          │
 └──────────────────────┘  └──────────────────────────┘
 ```
 
-### 插件化 Proxy/Relay
+### 期望状态引擎
 
-Proxy 和 Relay 作为独立插件注册到 CapabilityRegistry：
+```
+ReconcileEngine (每 30 秒 + 事件驱动触发):
+
+Proxy:
+  desired 有, actual 没有 → Provider.CreateProxy()   ← 创建
+  actual 有, desired 没有 → Provider.DeleteProxy()   ← 删除
+
+Relay:
+  desired 有, actual 没有 → Provider.CreateRelay()
+  actual 有, desired 没有 → Provider.DeleteRelay()
+
+失败退避:
+  创建失败 → failCount=1 → 30s 内跳过
+  再失败   → failCount=2 → 60s 内跳过
+  再失败   → failCount=3 → 120s 内跳过
+  ...最大 10 分钟
+  成功     → failCount=0 → 立即执行
+```
+
+**期望状态来源：** ADDED/DEDED 事件维护 `desiredProxies` / `desiredRelays`
+**实际状态来源：** StateStore 的 `proxies` map 和 `relays` map
+**触发方式：** 定时器 (30s) + EventBus 事件 (proxy/relay 变化立即触发)
+
+### 插件化 Proxy/Relay
 
 ```
 API 请求 → EventBus → 插件 Provider (listener 管理)
                      → Session Layer (隧道桥接 + WS 通知)
                      → StateStore (状态更新)
                      → Core (持久化)
+                     → ReconcileEngine (事件触发)
 ```
 
 **职责分离：**
@@ -149,24 +185,24 @@ API 请求 → EventBus → 插件 Provider (listener 管理)
 
 ```
 main.go:
-  NewCore()                    ← 创建 EventBus + StateStore
+  NewCore()                    ← 创建 EventBus + StateStore + ReconcileEngine
   session.NewServer()          ← 不订阅 EventBus
   initPlugins()                ← 插件 Init 注册 Provider + 订阅 EventBus
   sess.StartEventSubscriptions() ← 注入 notifyFn + 订阅 EventBus
-  core.Start()                 ← 启动 ReconcileEngine
+  core.Start()                 ← 启动 ReconcileEngine (5s 延迟后首次执行)
 ```
 
 ### 恢复流程
 
 ```
 persist.Run():
-  ├─ restoreFromMetaStore()  → EventBus ADDED → StateStore + Session
+  ├─ restoreFromMetaStore()  → EventBus ADDED → StateStore + 插件 (listener)
   ├─ restoreSnapshot()       → StateStore.Restore() (desired state)
   └─ restoreAll()            → 插件状态 (tag)
 
 客户端重连:
   trackSession()
-  ├─ syncClientProxies()     → 补发 proxy 配置
+  ├─ syncClientProxies()     → 补发 proxy 配置 + 启动隧道循环
   ├─ syncClientRelays()      → 从 StateStore 补发 relay 信号
   └─ deliverPendingRelaySignals() → 补发暂存信号
 ```
@@ -194,12 +230,15 @@ CLI: relay create A B -aport 9091 -bport 22
 
 A (source):                        B (target):
   连接 relay WS                      连接 relay WS
-  创建 mux                           创建 mux
+  net.Pipe 隔离 mux 和 WS            net.Pipe 隔离 mux 和 WS
+  创建 mux (在 pipe 上)              创建 mux (在 pipe 上)
   监听 9091                          设置 LocalTarget=127.0.0.1:22
 
 用户 SSH -p 9091 127.0.0.1:
-  A accept → mux channel → relay WS → server 桥接 → target WS → mux channel → B dial 127.0.0.1:22
+  A accept → mux channel → pipe → relay WS → server 桥接 → relay WS → pipe → mux channel → B dial 127.0.0.1:22
   双向 io.Copy + 半关闭
+
+net.Pipe 隔离确保 mux 和 relayWSPipe 不抢同一个 WebSocket 连接。
 ```
 
 ## CLI 工具
@@ -283,8 +322,8 @@ BBgrid/
 │   ├── runtime/                # Core: EventBus + StateStore + Reconcile + Capability
 │   │   ├── types.go            # 接口定义 (含 ProxyProvider/RelayProvider)
 │   │   ├── eventbus.go         # 事件总线
-│   │   ├── statestore.go       # 状态存储
-│   │   ├── reconcile.go        # 协调引擎
+│   │   ├── statestore.go       # 状态存储 (runtime + desired)
+│   │   ├── reconcile.go        # 协调引擎 (双向同步 + 事件触发 + 退避)
 │   │   └── capability.go       # 能力注册表
 │   ├── session/                # Session Layer (WS + 隧道 + 中继桥接)
 │   ├── dataplane/              # Data Plane (Tunnel :9908)
@@ -293,14 +332,14 @@ BBgrid/
 │   ├── main.go                 # 入口
 │   ├── client.go               # WS 连接 + 注册
 │   ├── conn/                   # WebSocket 连接封装
-│   └── handler/                # 消息处理 + 隧道 + 中继
+│   └── handler/                # 消息处理 + 隧道 + 中继 (net.Pipe 隔离)
 ├── BBgrid_Cmd/bbgrid-cli/      # CLI 工具
 ├── BBgrid_Runtime/             # 运行时 (WireGuard，待实现)
 ├── common/                     # 共享代码
 │   ├── config/                 # 配置管理
 │   ├── log/                    # 结构化日志
 │   ├── model/                  # 数据模型
-│   ├── mux/                    # TCP 多路复用 (含测试)
+│   ├── mux/                    # TCP 多路复用 (含测试 + io.Copy)
 │   ├── persist/                # 持久化 Provider 接口
 │   ├── plugin/                 # 插件接口 + gRPC
 │   ├── proto/                  # GenericEvent + ResourceKey

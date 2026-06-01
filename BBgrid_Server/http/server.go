@@ -55,6 +55,7 @@ func (s *Server) SetupRoutes() {
 
 	// === 注册 (公开) ===
 	r.POST("/api/v1/register/apply", s.handleRegisterApply)
+	r.POST("/api/v1/register/voucher", s.handleRegisterVoucher)
 	r.GET("/api/v1/register/list", s.handleRegisterList)
 
 	// === JWT 保护的端点 ===
@@ -66,6 +67,11 @@ func (s *Server) SetupRoutes() {
 		authGroup.POST("/register/approve", s.handleRegisterApprove)
 		authGroup.POST("/register/revoke", s.handleRegisterRevoke)
 		authGroup.GET("/register/pending", s.handleRegisterPending)
+
+		// 凭证管理
+		authGroup.POST("/vouchers", s.handleCreateVoucher)
+		authGroup.GET("/vouchers", s.handleListVouchers)
+		authGroup.DELETE("/vouchers/:code", s.handleDeleteVoucher)
 
 		// 代理管理
 		authGroup.GET("/proxies", s.handleListProxies)
@@ -405,6 +411,75 @@ func (s *Server) handleRegisterApply(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "msg": "applied"})
 }
 
+// handleRegisterVoucher 凭证注册：校验凭证 → 自动 approve → 签发证书
+func (s *Server) handleRegisterVoucher(c *gin.Context) {
+	var req struct {
+		ClientID  string `json:"client_id"`
+		PublicKey string `json:"public_key"`
+		Voucher   string `json:"voucher"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+		return
+	}
+	if req.ClientID == "" || req.PublicKey == "" || req.Voucher == "" {
+		c.JSON(400, gin.H{"code": 400, "msg": "client_id, public_key, voucher 都是必填"})
+		return
+	}
+
+	// 校验凭证
+	voucher, err := s.auth.UseVoucher(req.Voucher)
+	if err != nil {
+		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+		return
+	}
+
+	// 添加客户端（已存在则更新公钥）
+	if err := s.auth.AddApplication(req.ClientID, req.PublicKey); err != nil {
+		if err.Error() != "client already exists" {
+			c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+			return
+		}
+		// 已存在，更新公钥（用新密钥重新签发）
+		if err := s.auth.UpdatePublicKey(req.ClientID, req.PublicKey); err != nil {
+			c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+			return
+		}
+	}
+
+	// 自动 approve（已 approved 也重新签发证书）
+	namespace := voucher.Namespace
+	if namespace == "" {
+		namespace = "permanent"
+	}
+	role := voucher.Role
+	if role == "" {
+		role = "node"
+	}
+
+	cert, err := s.auth.Approve(req.ClientID, namespace, role)
+	if err != nil {
+		// 已 approved 的，先重置状态再重新签发
+		if strings.Contains(err.Error(), "already approved") || strings.Contains(err.Error(), "already") {
+			s.auth.ResetClientStatus(req.ClientID)
+			cert, err = s.auth.Approve(req.ClientID, namespace, role)
+			if err != nil {
+				c.JSON(500, gin.H{"code": 500, "msg": err.Error()})
+				return
+			}
+		} else {
+			c.JSON(500, gin.H{"code": 500, "msg": err.Error()})
+			return
+		}
+	}
+
+	ok(c, gin.H{
+		"certificate": string(cert),
+		"namespace":   namespace,
+		"role":        role,
+	})
+}
+
 // handleRegisterList 注册列表 (已批准)
 func (s *Server) handleRegisterList(c *gin.Context) {
 	clients := s.auth.GetApproved()
@@ -421,7 +496,41 @@ func (s *Server) handleRegisterList(c *gin.Context) {
 
 func (s *Server) handleListNodes(c *gin.Context) {
 	state := s.core.StateStore()
-	ok(c, gin.H{"clients": state.ListClients()})
+	onlineClients := state.ListClients()
+
+	onlineMap := make(map[string]bool, len(onlineClients))
+	for _, oc := range onlineClients {
+		onlineMap[oc.ID] = true
+	}
+
+	approved := s.auth.GetApproved()
+	clients := make([]gin.H, 0, len(approved))
+	for _, a := range approved {
+		if onlineMap[a.ClientID] {
+			for _, oc := range onlineClients {
+				if oc.ID == a.ClientID {
+					clients = append(clients, gin.H{
+						"id":          oc.ID,
+						"remote_addr": oc.RemoteAddr,
+						"online":      true,
+						"host":        oc.Host,
+						"proxy_count": oc.ProxyCount,
+					})
+					break
+				}
+			}
+		} else {
+			clients = append(clients, gin.H{
+				"id":          a.ClientID,
+				"remote_addr": "",
+				"online":      false,
+				"host":        "",
+				"proxy_count": 0,
+			})
+		}
+	}
+
+	ok(c, gin.H{"clients": clients})
 }
 
 func (s *Server) handleGetNode(c *gin.Context) {
@@ -429,6 +538,19 @@ func (s *Server) handleGetNode(c *gin.Context) {
 	state := s.core.StateStore()
 	client, ok2 := state.GetClientInfo(id)
 	if !ok2 {
+		approved := s.auth.GetApproved()
+		for _, a := range approved {
+			if a.ClientID == id {
+				ok(c, gin.H{
+					"id":          a.ClientID,
+					"remote_addr": "",
+					"online":      false,
+					"host":        "",
+					"proxy_count": 0,
+				})
+				return
+			}
+		}
 		c.JSON(404, gin.H{"code": 404, "msg": "client not found"})
 		return
 	}
@@ -756,6 +878,50 @@ func getParamKeys(params map[string]any) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// ==================== Voucher Handlers ====================
+
+func (s *Server) handleCreateVoucher(c *gin.Context) {
+	var req struct {
+		MaxUses   int    `json:"max_uses"`
+		ExpiresIn int    `json:"expires_in"` // 秒，0=不过期
+		Namespace string `json:"namespace"`
+		Role      string `json:"role"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+		return
+	}
+	if req.Namespace == "" {
+		req.Namespace = "permanent"
+	}
+	if req.Role == "" {
+		req.Role = "node"
+	}
+	var expiresAt int64
+	if req.ExpiresIn > 0 {
+		expiresAt = time.Now().Add(time.Duration(req.ExpiresIn) * time.Second).Unix()
+	}
+	v, err := s.auth.CreateVoucher(req.MaxUses, expiresAt, req.Namespace, req.Role)
+	if err != nil {
+		c.JSON(500, gin.H{"code": 500, "msg": err.Error()})
+		return
+	}
+	ok(c, v)
+}
+
+func (s *Server) handleListVouchers(c *gin.Context) {
+	ok(c, gin.H{"vouchers": s.auth.ListVouchers()})
+}
+
+func (s *Server) handleDeleteVoucher(c *gin.Context) {
+	code := c.Param("code")
+	if !s.auth.DeleteVoucher(code) {
+		c.JSON(404, gin.H{"code": 404, "msg": "voucher not found"})
+		return
+	}
+	ok(c, gin.H{"status": "deleted"})
 }
 
 // ok 返回标准成功响应 {"code":0,"msg":"success","data":...}

@@ -84,7 +84,7 @@ func main() {
 		alog.Fatal(alog.CatSystem, "初始化 Auth 失败", "error", err)
 	}
 
-	// 创建 Runtime Core
+	// 创建 Runtime Core 事件驱动
 	core := runtime.NewCore(runtime.CoreConfig{
 		PublicIP:          cfg.PublicIP,
 		ReconcileInterval: 30,

@@ -91,6 +91,7 @@ func (e *ReconcileEngine) Run() error {
 
 	for {
 		select {
+		// <-ch 从 channel 读取但丢弃值，常用于信号通知
 		case <-ticker.C:
 			e.doReconcile()
 		case <-e.triggerCh:

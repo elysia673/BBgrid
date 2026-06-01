@@ -97,6 +97,8 @@ func main() {
 		cmdRelay(rest)
 	case "register":
 		cmdRegister(rest)
+	case "voucher":
+		cmdVoucher(rest)
 	case "namespace":
 		cmdNamespace(rest)
 	case "sync":
@@ -131,7 +133,8 @@ func printMainHelp() {
   node        节点管理 (list / view <id>)
   proxy       代理管理 (list / create / close)
   relay       中继管理 (list / create / close)
-  register    注册管理 (apply / approve / revoke / pending / list)
+  register    注册管理 (apply / approve / revoke / pending / list / voucher)
+  voucher     凭证管理 (create / list / delete)
   namespace   命名空间管理 (list / info / clients / assign)
   sync        同步插件可用操作列表
   run         执行插件操作
@@ -247,7 +250,28 @@ revoke 选项:
   aether-cli register pending                  # 查看待审核客户端
   aether-cli register approve -id my-device    # 审核通过指定客户端
   aether-cli register apply -id new-device -pubkey client.pub -token xxx
-  aether-cli register revoke -id old-device    # 吊销客户端`,
+  aether-cli register revoke -id old-device    # 吊销客户端
+  aether-cli register voucher -id my-device -pubkey client.pub -voucher vch_xxx`,
+
+		"voucher": `用法: aether-cli voucher <子命令> [参数]
+
+凭证管理，用于生成注册凭证，客户端凭证注册自动通过审核。
+
+子命令:
+  create                          创建新凭证
+  list                            列出所有凭证
+  delete <code>                   删除凭证
+
+create 选项:
+  -max-uses <n>                   最大使用次数 (0=不限)
+  -expires <sec>                  过期秒数 (0=不过期)
+  -namespace <ns>                 注册到哪个命名空间 (默认 permanent)
+  -role <role>                    默认角色 (默认 node)
+
+示例:
+  aether-cli voucher create -max-uses 10 -expires 86400
+  aether-cli voucher list
+  aether-cli voucher delete vch_a1b2c3d4e5f6`,
 
 		"namespace": `用法: aether-cli namespace <子命令> [参数]
 
@@ -735,9 +759,92 @@ func cmdRegister(args []string) {
 			printRegisterList(resp)
 		}
 
+	case "voucher":
+		fs := flag.NewFlagSet("register voucher", flag.ExitOnError)
+		id := fs.String("id", "", "客户端 ID")
+		pubkey := fs.String("pubkey", "", "公钥文件")
+		voucher := fs.String("voucher", "", "凭证码")
+		fs.Parse(rest)
+		if *id == "" || *pubkey == "" || *voucher == "" {
+			fmt.Fprintln(os.Stderr, "错误: -id, -pubkey, -voucher 必填")
+			os.Exit(1)
+		}
+		keyData, err := os.ReadFile(*pubkey)
+		fatalOn(err)
+		resp, err := api("POST", "/api/v1/register/voucher", map[string]string{
+			"client_id":  *id,
+			"public_key": string(keyData),
+			"voucher":    *voucher,
+		})
+		fatalOn(err)
+		print(resp)
+
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", sub)
-		fmt.Fprintln(os.Stderr, "用法: aether-cli register <apply|approve|revoke|pending|list>")
+		fmt.Fprintln(os.Stderr, "用法: aether-cli register <apply|approve|revoke|pending|list|voucher>")
+		os.Exit(1)
+	}
+}
+
+func cmdVoucher(args []string) {
+	if len(args) == 0 {
+		printCommandHelp("voucher")
+		os.Exit(0)
+	}
+	sub, rest := args[0], args[1:]
+
+	switch sub {
+	case "create":
+		fs := flag.NewFlagSet("voucher create", flag.ExitOnError)
+		maxUses := fs.Int("max-uses", 0, "最大使用次数 (0=不限)")
+		expiresIn := fs.Int("expires", 0, "过期秒数 (0=不过期)")
+		namespace := fs.String("namespace", "permanent", "注册到哪个命名空间")
+		role := fs.String("role", "node", "默认角色")
+		fs.Parse(rest)
+		if *maxUses == 0 && *expiresIn == 0 {
+			fmt.Fprintln(os.Stderr, "创建注册凭证，客户端凭证注册自动通过审核")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "参数:")
+			fmt.Fprintln(os.Stderr, "  -max-uses <n>      最大使用次数，0=不限 (必填其一)")
+			fmt.Fprintln(os.Stderr, "  -expires <sec>     过期秒数，0=不过期 (必填其一)")
+			fmt.Fprintln(os.Stderr, "  -namespace <ns>    注册到哪个命名空间 (默认 permanent)")
+			fmt.Fprintln(os.Stderr, "  -role <role>       默认角色 (默认 node)")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "示例:")
+			fmt.Fprintln(os.Stderr, "  aether-cli voucher create -max-uses 10 -expires 86400")
+			fmt.Fprintln(os.Stderr, "  aether-cli voucher create -max-uses 1 -namespace temporary")
+			os.Exit(0)
+		}
+		resp, err := api("POST", "/api/v1/vouchers", map[string]any{
+			"max_uses":   *maxUses,
+			"expires_in": *expiresIn,
+			"namespace":  *namespace,
+			"role":       *role,
+		})
+		fatalOn(err)
+		print(resp)
+
+	case "list":
+		resp, err := api("GET", "/api/v1/vouchers", nil)
+		fatalOn(err)
+		if jsonOutput {
+			printJSON(resp)
+			return
+		}
+		print(resp)
+
+	case "delete":
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "用法: aether-cli voucher delete <code>")
+			os.Exit(1)
+		}
+		resp, err := api("DELETE", "/api/v1/vouchers/"+rest[0], nil)
+		fatalOn(err)
+		print(resp)
+
+	default:
+		fmt.Fprintf(os.Stderr, "未知子命令: %s\n", sub)
+		fmt.Fprintln(os.Stderr, "用法: aether-cli voucher <create|list|delete>")
 		os.Exit(1)
 	}
 }

@@ -99,7 +99,7 @@ func main() {
 		}
 	}
 
-	client := NewClient(cfg.ServerURL, cfg.ClientID, cfg.ClientToken, cfg.PrivateKeyPath, cfg.PublicKeyPath, cfg.CertificatePath, cfg.UseHTTP, cfg.Insecure, cfg.TLSSNI, cfg.Origin, cfg.UDPTunnelKey, cfg.DataDir, time.Duration(cfg.ReconnectDelaySeconds)*time.Second, logCollector)
+	client := NewClient(cfg.ServerURL, cfg.ClientID, cfg.ClientToken, cfg.Voucher, cfg.PrivateKeyPath, cfg.PublicKeyPath, cfg.CertificatePath, cfg.UseHTTP, cfg.Insecure, cfg.TLSSNI, cfg.Origin, cfg.UDPTunnelKey, cfg.DataDir, time.Duration(cfg.ReconnectDelaySeconds)*time.Second, logCollector)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

@@ -15,6 +15,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -47,6 +48,7 @@ type Manager struct {
 	jwtFile    string
 	clients    map[string]*ClientRecord
 	namespaces map[string]*NamespaceInfo
+	vouchers   map[string]*Voucher
 	mu         sync.RWMutex
 }
 
@@ -71,6 +73,17 @@ type NamespaceInfo struct {
 	CreatedAt   int64    `json:"created_at"`
 }
 
+// Voucher 注册凭证
+type Voucher struct {
+	Code      string `json:"code"`       // 凭证码
+	MaxUses   int    `json:"max_uses"`   // 最大使用次数 (0=不限)
+	UsedCount int    `json:"used_count"` // 已使用次数
+	ExpiresAt int64  `json:"expires_at"` // 过期时间戳 (0=不过期)
+	Namespace string `json:"namespace"`  // 注册到哪个命名空间
+	Role      string `json:"role"`       // 默认角色
+	CreatedAt int64  `json:"created_at"`
+}
+
 // JWTClaims JWT 声明
 type JWTClaims struct {
 	APIKey string `json:"api_key"`
@@ -83,6 +96,7 @@ func NewManager(config Config) *Manager {
 		config:     config,
 		clients:    make(map[string]*ClientRecord),
 		namespaces: make(map[string]*NamespaceInfo),
+		vouchers:   make(map[string]*Voucher),
 		jwtFile:    filepath.Join(config.DataDir, "jwt.secret"),
 	}
 }
@@ -101,6 +115,9 @@ func (m *Manager) Init() error {
 
 	// 加载客户端注册表
 	m.loadRegistry()
+
+	// 加载凭证
+	m.loadVouchers()
 
 	// 初始化默认命名空间
 	m.initDefaultNamespaces()
@@ -353,6 +370,105 @@ func (m *Manager) initDefaultNamespaces() {
 	}
 }
 
+// ==================== Voucher ====================
+
+func (m *Manager) loadVouchers() {
+	path := filepath.Join(m.config.DataDir, "vouchers.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if err := json.Unmarshal(data, &m.vouchers); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: 解析 vouchers.json 失败: %v\n", err)
+	}
+}
+
+func (m *Manager) saveVouchers() error {
+	path := filepath.Join(m.config.DataDir, "vouchers.json")
+	data, err := json.MarshalIndent(m.vouchers, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal vouchers: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// CreateVoucher 创建凭证
+func (m *Manager) CreateVoucher(maxUses int, expiresAt int64, namespace, role string) (*Voucher, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	code := "vch_" + generateRandomHex(12)
+	v := &Voucher{
+		Code:      code,
+		MaxUses:   maxUses,
+		UsedCount: 0,
+		ExpiresAt: expiresAt,
+		Namespace: namespace,
+		Role:      role,
+		CreatedAt: time.Now().Unix(),
+	}
+	m.vouchers[code] = v
+	if err := m.saveVouchers(); err != nil {
+		delete(m.vouchers, code)
+		return nil, err
+	}
+	return v, nil
+}
+
+// UseVoucher 使用凭证（校验 + 消耗次数）
+func (m *Manager) UseVoucher(code string) (*Voucher, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	v, exists := m.vouchers[code]
+	if !exists {
+		return nil, fmt.Errorf("凭证不存在")
+	}
+	if v.ExpiresAt > 0 && time.Now().Unix() > v.ExpiresAt {
+		return nil, fmt.Errorf("凭证已过期")
+	}
+	if v.MaxUses > 0 && v.UsedCount >= v.MaxUses {
+		return nil, fmt.Errorf("凭证已用完")
+	}
+
+	v.UsedCount++
+	if err := m.saveVouchers(); err != nil {
+		v.UsedCount--
+		return nil, err
+	}
+	return v, nil
+}
+
+// ListVouchers 列出所有凭证
+func (m *Manager) ListVouchers() []*Voucher {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]*Voucher, 0, len(m.vouchers))
+	for _, v := range m.vouchers {
+		result = append(result, v)
+	}
+	return result
+}
+
+// DeleteVoucher 删除凭证
+func (m *Manager) DeleteVoucher(code string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.vouchers[code]; !exists {
+		return false
+	}
+	delete(m.vouchers, code)
+	m.saveVouchers()
+	return true
+}
+
+// generateRandomHex 生成随机 hex 字符串
+func generateRandomHex(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // AddApplication 添加注册申请
 func (m *Manager) AddApplication(clientID, publicKey string) error {
 	m.mu.Lock()
@@ -375,6 +491,31 @@ func (m *Manager) AddApplication(clientID, publicKey string) error {
 		return err
 	}
 	return nil
+}
+
+// UpdatePublicKey 更新客户端公钥（重新签发时使用）
+func (m *Manager) UpdatePublicKey(clientID, publicKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	client, exists := m.clients[clientID]
+	if !exists {
+		return fmt.Errorf("client not found")
+	}
+	client.PublicKey = publicKey
+	client.Certificate = ""
+	client.Status = "pending"
+	return m.saveRegistry()
+}
+
+// ResetClientStatus 重置客户端状态为 pending（重新签发证书时使用）
+func (m *Manager) ResetClientStatus(clientID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if client, exists := m.clients[clientID]; exists {
+		client.Status = "pending"
+		client.Certificate = ""
+		m.saveRegistry()
+	}
 }
 
 // Approve 批准注册

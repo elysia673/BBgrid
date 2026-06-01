@@ -15,6 +15,7 @@ import (
 // - StateStore (状态存储, event-driven apply)
 // - ReconcileEngine (状态协调)
 // - CapabilityRegistry (能力注册)
+// - StorageManager (状态持久化)
 //
 // 禁止:
 // - 直接写 StateStore
@@ -36,11 +37,11 @@ type CoreConfig struct {
 
 // NewCore 创建 Runtime Core
 func NewCore(config CoreConfig, storage *store.StorageManager) *Core {
-	eventBus := NewEventBus()
-	stateStore := NewStateStore(config.PublicIP)
-	capability := NewCapabilityRegistry()
+	eventBus := NewEventBus()                    // 创建事件总线
+	stateStore := NewStateStore(config.PublicIP) // 创建状态存储
+	capability := NewCapabilityRegistry()        // 创建能力注册表
 
-	reconcileConfig := DefaultReconcileConfig()
+	reconcileConfig := DefaultReconcileConfig() // 创建默认间隔和延迟配置
 	if config.ReconcileInterval > 0 {
 		reconcileConfig.Interval = intToDuration(config.ReconcileInterval)
 	}
@@ -52,10 +53,10 @@ func NewCore(config CoreConfig, storage *store.StorageManager) *Core {
 		storage:    storage,
 	}
 
-	// 创建 ReconcileProvider (通过 EventBus 创建资源)
+	// 创建 ReconcileProvider (通过 EventBus 创建资源) 对账数据
 	provider := NewEventBusReconcileProvider(core)
 
-	// 创建 ReconcileEngine
+	// 创建 ReconcileEngine 对账引擎
 	core.reconcile = NewReconcileEngine(reconcileConfig, stateStore, provider)
 
 	// 订阅事件到 StateStore
@@ -169,7 +170,7 @@ func (c *Core) Stop() {
 	c.eventBus.Close()
 }
 
-// 辅助函数
+// 辅助函数 秒数转成 time.Duratio
 func intToDuration(seconds int) time.Duration {
 	return time.Duration(seconds) * time.Second
 }

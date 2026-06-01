@@ -29,25 +29,25 @@ type StorageConfig struct {
 
 // NewStorageManager 创建存储管理器
 func NewStorageManager(config StorageConfig) (*StorageManager, error) {
-	// 设置默认值
+	// 设置默认值 每累积 1000 个事件就自动创建一个状态快照
 	if config.SnapshotInterval <= 0 {
 		config.SnapshotInterval = 1000
 	}
 
-	// 创建事件存储
+	// 创建事件存储 历史记录
 	events, err := NewEventStore(config.DataDir)
 	if err != nil {
 		return nil, err
 	}
 
-	// 创建快照存储
+	// 创建快照存储 固化状态
 	snapshots, err := NewSnapshotStore(config.DataDir)
 	if err != nil {
 		events.Close()
 		return nil, err
 	}
 
-	// 创建元数据存储
+	// 创建元数据存储 维护当前状态用于快速查询
 	meta, err := NewMetaStore(config.DataDir)
 	if err != nil {
 		events.Close()

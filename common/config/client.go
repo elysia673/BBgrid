@@ -19,6 +19,7 @@ type ClientConfig struct {
 	ServerURL             string `json:"server_url"`
 	ClientToken           string `json:"client_token"`
 	ClientID              string `json:"client_id"`
+	Voucher               string `json:"voucher"`
 	DataDir               string `json:"data_dir"`
 	LogPath               string `json:"log_path"`
 	PrivateKeyPath        string `json:"private_key_path"`
@@ -62,6 +63,7 @@ func LoadClient(path string) (*ClientConfig, error) {
 	cfg.ServerURL = envStr("BBGRID_WS_URL", cfg.ServerURL)
 	cfg.ClientToken = envStr("BBGRID_CLIENT_TOKEN", cfg.ClientToken)
 	cfg.ClientID = envStr("BBGRID_CLIENT_ID", cfg.ClientID)
+	cfg.Voucher = envStr("BBGRID_VOUCHER", cfg.Voucher)
 	cfg.DataDir = envStr("BBGRID_DATA_DIR", cfg.DataDir)
 	cfg.LogPath = envStr("BBGRID_LOG_PATH", cfg.LogPath)
 	cfg.UseHTTP = envBool("BBGRID_USE_HTTP", cfg.UseHTTP)
