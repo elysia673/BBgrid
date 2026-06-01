@@ -95,11 +95,6 @@ func (p *Plugin) handleProxyAdded(event proto.GenericEvent) {
 		return
 	}
 
-	// 如果正在恢复，跳过（persist 插件会通过 restoreFromMetaStore 处理）
-	if p.core.IsRestoring() {
-		return
-	}
-
 	req := runtime.ProxyCreateRequest{
 		ClientID:   proxy.ClientID,
 		RemotePort: proxy.RemotePort,

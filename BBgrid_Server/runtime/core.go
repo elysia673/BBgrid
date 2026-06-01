@@ -77,6 +77,10 @@ func NewCore(config CoreConfig, storage *store.StorageManager) *Core {
 				}
 			}
 		}
+		// 触发 ReconcileEngine
+		if core.reconcile != nil {
+			core.reconcile.Trigger()
+		}
 	})
 	eventBus.Subscribe(proto.ResourceTypeRelay, func(event proto.GenericEvent) {
 		stateStore.Apply(event)
@@ -90,6 +94,10 @@ func NewCore(config CoreConfig, storage *store.StorageManager) *Core {
 					alog.Error(alog.CatSystem, "relay 删除持久化失败", "error", err, "event_id", event.ID)
 				}
 			}
+		}
+		// 触发 ReconcileEngine
+		if core.reconcile != nil {
+			core.reconcile.Trigger()
 		}
 	})
 

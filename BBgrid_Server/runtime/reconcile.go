@@ -3,6 +3,7 @@ package runtime
 import (
 	alog "BBgrid/common/log"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -24,7 +25,7 @@ func DefaultReconcileConfig() ReconcileConfig {
 // ReconcileEngine 协调引擎 (Runtime Core 内置)
 //
 // 负责保证 desired state == actual state。
-// 不是 plugin，是 Runtime Core 的核心机制。
+// 支持：定时协调 + 事件驱动触发 + 失败退避。
 type ReconcileEngine struct {
 	config   ReconcileConfig
 	state    StateStore
@@ -36,17 +37,28 @@ type ReconcileEngine struct {
 	history   []ReconcileResult
 	stopCh    chan struct{}
 	stopped   bool
+
+	// 失败退避：记录连续失败次数和上次失败时间
+	proxyFailCount map[string]int       // key: "clientID:port"
+	proxyFailTime  map[string]time.Time // key: "clientID:port"
+	relayFailCount map[string]int       // key: sessionID
+	relayFailTime  map[string]time.Time // key: sessionID
+	backoffMu      sync.Mutex
 }
 
 // NewReconcileEngine 创建协调引擎
 func NewReconcileEngine(config ReconcileConfig, state StateStore, provider ReconcileProvider) *ReconcileEngine {
 	return &ReconcileEngine{
-		config:    config,
-		state:     state,
-		provider:  provider,
-		triggerCh: make(chan struct{}, 1),
-		stopCh:    make(chan struct{}),
-		history:   make([]ReconcileResult, 0, 100),
+		config:         config,
+		state:          state,
+		provider:       provider,
+		triggerCh:      make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
+		history:        make([]ReconcileResult, 0, 100),
+		proxyFailCount: make(map[string]int),
+		proxyFailTime:  make(map[string]time.Time),
+		relayFailCount: make(map[string]int),
+		relayFailTime:  make(map[string]time.Time),
 	}
 }
 
@@ -156,14 +168,48 @@ func (e *ReconcileEngine) doReconcile() {
 	}
 }
 
-// reconcileProxies 协调代理状态
+// reconcileProxies 协调代理状态：创建缺失的，删除多余的
 func (e *ReconcileEngine) reconcileProxies() (total, fixed, failed int) {
 	desired := e.state.GetDesiredProxies()
-	total = len(desired)
+	actual := e.state.ListProxies()
 
+	desiredSet := make(map[string]bool, len(desired))
 	for _, d := range desired {
-		if _, exists := e.state.GetProxy(d.ClientID, d.RemotePort); exists {
+		key := fmt.Sprintf("%s:%d", d.ClientID, d.RemotePort)
+		desiredSet[key] = true
+	}
+
+	actualSet := make(map[string]bool, len(actual))
+	for _, a := range actual {
+		key := fmt.Sprintf("%s:%d", a.ClientID, a.RemotePort)
+		actualSet[key] = true
+	}
+
+	// 创建：desired 有但 actual 没有
+	for _, d := range desired {
+		key := fmt.Sprintf("%s:%d", d.ClientID, d.RemotePort)
+		if actualSet[key] {
+			e.backoffMu.Lock()
+			delete(e.proxyFailCount, key)
+			delete(e.proxyFailTime, key)
+			e.backoffMu.Unlock()
 			continue
+		}
+		total++
+
+		// 退避检查：失败后指数退避，最长 10 分钟
+		e.backoffMu.Lock()
+		failCount := e.proxyFailCount[key]
+		failTime := e.proxyFailTime[key]
+		e.backoffMu.Unlock()
+		if failCount > 0 {
+			backoff := time.Duration(1<<uint(failCount-1)) * 30 * time.Second
+			if backoff > 10*time.Minute {
+				backoff = 10 * time.Minute
+			}
+			if time.Since(failTime) < backoff {
+				continue // 还在退避期，跳过
+			}
 		}
 
 		proxy := ProxyState{
@@ -177,10 +223,32 @@ func (e *ReconcileEngine) reconcileProxies() (total, fixed, failed int) {
 
 		if err := e.provider.CreateProxy(d.ClientID, proxy); err != nil {
 			alog.Error(alog.CatSystem, "Reconcile 创建代理失败",
-				"client_id", d.ClientID,
-				"port", d.RemotePort,
-				"error", err,
-			)
+				"client_id", d.ClientID, "port", d.RemotePort, "error", err)
+			e.backoffMu.Lock()
+			e.proxyFailCount[key]++
+			e.proxyFailTime[key] = time.Now()
+			e.backoffMu.Unlock()
+			failed++
+		} else {
+			e.backoffMu.Lock()
+			delete(e.proxyFailCount, key)
+			delete(e.proxyFailTime, key)
+			e.backoffMu.Unlock()
+			fixed++
+		}
+	}
+
+	// 删除：actual 有但 desired 没有
+	for _, a := range actual {
+		key := fmt.Sprintf("%s:%d", a.ClientID, a.RemotePort)
+		if desiredSet[key] {
+			continue
+		}
+		total++
+
+		if err := e.provider.DeleteProxy(a.ClientID, a.RemotePort); err != nil {
+			alog.Error(alog.CatSystem, "Reconcile 删除代理失败",
+				"client_id", a.ClientID, "port", a.RemotePort, "error", err)
 			failed++
 		} else {
 			fixed++
@@ -190,27 +258,47 @@ func (e *ReconcileEngine) reconcileProxies() (total, fixed, failed int) {
 	return
 }
 
-// reconcileRelays 协调中继状态
+// reconcileRelays 协调中继状态：创建缺失的，删除多余的
 func (e *ReconcileEngine) reconcileRelays() (total, fixed, failed int) {
 	desired := e.state.GetDesiredRelays()
-	total = len(desired)
+	actual := e.state.ListRelaySessions()
 
+	desiredSet := make(map[string]bool, len(desired))
 	for _, d := range desired {
-		if _, exists := e.state.GetRelaySession(d.ID); exists {
+		desiredSet[d.ID] = true
+	}
+
+	actualSet := make(map[string]bool, len(actual))
+	for _, a := range actual {
+		actualSet[a.ID] = true
+	}
+
+	// 创建：desired 有但 actual 没有
+	for _, d := range desired {
+		if actualSet[d.ID] {
+			e.backoffMu.Lock()
+			delete(e.relayFailCount, d.ID)
+			delete(e.relayFailTime, d.ID)
+			e.backoffMu.Unlock()
 			continue
 		}
-		stillDesired := false
-		for _, cd := range e.state.GetDesiredRelays() {
-			if cd.ID == d.ID {
-				stillDesired = true
-				break
+		total++
+
+		// 退避检查
+		e.backoffMu.Lock()
+		failCount := e.relayFailCount[d.ID]
+		failTime := e.relayFailTime[d.ID]
+		e.backoffMu.Unlock()
+		if failCount > 0 {
+			backoff := time.Duration(1<<uint(failCount-1)) * 30 * time.Second
+			if backoff > 10*time.Minute {
+				backoff = 10 * time.Minute
+			}
+			if time.Since(failTime) < backoff {
+				continue
 			}
 		}
-		if !stillDesired {
-			continue
-		}
 
-		// 期望存在但实际不存在，需要创建
 		session := RelaySession{
 			ID:            d.ID,
 			SourceClient:  d.SourceClient,
@@ -220,14 +308,35 @@ func (e *ReconcileEngine) reconcileRelays() (total, fixed, failed int) {
 			TargetPort:    d.TargetPort,
 			TargetLocalIP: d.TargetLocalIP,
 			SourceLocalIP: d.SourceLocalIP,
-			Token:         d.Token,
 		}
 
 		if err := e.provider.CreateRelay(session); err != nil {
 			alog.Error(alog.CatSystem, "Reconcile 创建中继失败",
-				"session_id", d.ID,
-				"error", err,
-			)
+				"session_id", d.ID, "error", err)
+			e.backoffMu.Lock()
+			e.relayFailCount[d.ID]++
+			e.relayFailTime[d.ID] = time.Now()
+			e.backoffMu.Unlock()
+			failed++
+		} else {
+			e.backoffMu.Lock()
+			delete(e.relayFailCount, d.ID)
+			delete(e.relayFailTime, d.ID)
+			e.backoffMu.Unlock()
+			fixed++
+		}
+	}
+
+	// 删除：actual 有但 desired 没有
+	for _, a := range actual {
+		if desiredSet[a.ID] {
+			continue
+		}
+		total++
+
+		if err := e.provider.DeleteRelay(a.ID); err != nil {
+			alog.Error(alog.CatSystem, "Reconcile 删除中继失败",
+				"session_id", a.ID, "error", err)
 			failed++
 		} else {
 			fixed++

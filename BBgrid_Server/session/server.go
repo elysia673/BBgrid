@@ -394,7 +394,6 @@ type Server struct {
 	pendingMu          sync.Mutex
 	stopCh             chan struct{}
 	stopOnce           sync.Once
-	relayClients       sync.Map // sessionID -> []string{sourceClient, targetClient}
 	relayPending       map[string]chan *websocket.Conn // sessionID -> pending relay conn
 	pendingRelaySignal map[string][]model.WSMessage     // clientID -> 待补发的 relay 信号
 	relayMu            sync.Mutex
@@ -888,114 +887,6 @@ func parseProxyResourceKey(key string) (string, int, bool) {
 		return "", 0, false
 	}
 	return clientID, port, true
-}
-
-func (s *Server) getRelayClients(sessionID string) (string, string) {
-	if v, ok := s.relayClients.Load(sessionID); ok {
-		clients, ok := v.([]string)
-		if !ok || len(clients) < 2 {
-			return "", ""
-		}
-		return clients[0], clients[1]
-	}
-	return "", ""
-}
-
-func (s *Server) clearRelayClients(sessionID string) {
-	s.relayClients.Delete(sessionID)
-}
-
-// handleRelayEvent 处理中继事件
-func (s *Server) handleRelayEvent(event proto.GenericEvent) {
-	switch event.EventType {
-	case proto.EventAdded:
-		session, ok := event.Payload.(runtime.RelaySession)
-		if !ok {
-			return
-		}
-		s.relayClients.Store(session.ID, []string{session.SourceClient, session.TargetClient})
-		s.notifyRelayClients(session, "relay_signal")
-		alog.Info(alog.CatWS, "已通知客户端建立中继",
-			"session_id", session.ID,
-			"source", session.SourceClient,
-			"target", session.TargetClient,
-		)
-	case proto.EventDeleted:
-		sessionID := event.Resource.Name
-		source, target := s.getRelayClients(sessionID)
-		if source == "" && target == "" {
-			return
-		}
-		s.notifyRelayClients(runtime.RelaySession{
-			ID:           sessionID,
-			SourceClient: source,
-			TargetClient: target,
-		}, "relay_closed")
-		s.clearRelayClients(sessionID)
-		alog.Info(alog.CatWS, "已通知客户端关闭中继",
-			"session_id", sessionID,
-			"source", source,
-			"target", target,
-		)
-	}
-}
-
-func (s *Server) notifyRelayClients(session runtime.RelaySession, msgType string) {
-	sourceMsg := model.WSMessage{
-		Type: msgType,
-		Data: map[string]any{
-			"session_id":      session.ID,
-			"protocol":        session.Protocol,
-			"role":            "source",
-			"peer_client_id":  session.TargetClient,
-			"source_port":     session.SourcePort,
-			"target_port":     session.TargetPort,
-			"target_local_ip": session.TargetLocalIP,
-			"source_local_ip": session.SourceLocalIP,
-			"server_host":     s.core.StateStore().GetPublicIP(),
-			"token":           session.Token,
-		},
-	}
-	if err := s.SendToClient(session.SourceClient, sourceMsg); err != nil {
-		alog.Warn(alog.CatWS, "通知源客户端失败，暂存等待重连补发",
-			"session_id", session.ID,
-			"client_id", session.SourceClient,
-			"type", msgType,
-			"error", err,
-		)
-		s.pendingMu.Lock()
-		s.pendingRelaySignal[session.SourceClient] = append(
-			s.pendingRelaySignal[session.SourceClient], sourceMsg)
-		s.pendingMu.Unlock()
-	}
-
-	targetMsg := model.WSMessage{
-		Type: msgType,
-		Data: map[string]any{
-			"session_id":      session.ID,
-			"protocol":        session.Protocol,
-			"role":            "target",
-			"peer_client_id":  session.SourceClient,
-			"source_port":     session.SourcePort,
-			"target_port":     session.TargetPort,
-			"target_local_ip": session.TargetLocalIP,
-			"source_local_ip": session.SourceLocalIP,
-			"server_host":     s.core.StateStore().GetPublicIP(),
-			"token":           session.Token,
-		},
-	}
-	if err := s.SendToClient(session.TargetClient, targetMsg); err != nil {
-		alog.Warn(alog.CatWS, "通知目标客户端失败，暂存等待重连补发",
-			"session_id", session.ID,
-			"client_id", session.TargetClient,
-			"type", msgType,
-			"error", err,
-		)
-		s.pendingMu.Lock()
-		s.pendingRelaySignal[session.TargetClient] = append(
-			s.pendingRelaySignal[session.TargetClient], targetMsg)
-		s.pendingMu.Unlock()
-	}
 }
 
 // extractClientID 从 mTLS 证书提取 clientID
