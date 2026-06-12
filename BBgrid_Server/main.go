@@ -4,6 +4,7 @@ import (
 	"BBgrid/BBgrid_Server/auth"
 	"BBgrid/BBgrid_Server/dataplane"
 	ahttp "BBgrid/BBgrid_Server/http"
+	"BBgrid/BBgrid_Server/plugin"
 	"BBgrid/BBgrid_Server/runtime"
 	"BBgrid/BBgrid_Server/session"
 	alog "BBgrid/common/log"
@@ -33,13 +34,22 @@ var (
 	GitCommit = "unknown"
 )
 
+// 默认配置常量
+const (
+	DefaultHTTPAddr          = ":9909"
+	DefaultTunnelPort        = 9908
+	DefaultDataDir           = "data"
+	DefaultReconcileInterval = 30
+	DefaultSnapshotInterval  = 1000
+)
+
 func main() {
 	configPath := flag.String("config", "config.json", "配置文件路径")
 	showVersion := flag.Bool("version", false, "显示版本信息")
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("Aether Server %s (built: %s, commit: %s)\n", Version, BuildTime, GitCommit)
+		fmt.Printf("BBgrid Server %s (built: %s, commit: %s)\n", Version, BuildTime, GitCommit)
 		os.Exit(0)
 	}
 
@@ -59,7 +69,7 @@ func main() {
 		}
 	}
 
-	alog.Info(alog.CatSystem, "Aether Server 启动",
+	alog.Info(alog.CatSystem, "BBgrid Server 启动",
 		"version", Version,
 		"addr", cfg.Addr,
 		"tunnel_port", cfg.TunnelPort,
@@ -68,7 +78,7 @@ func main() {
 	// 初始化存储
 	storage, err := store.NewStorageManager(store.StorageConfig{
 		DataDir:          cfg.DataDir,
-		SnapshotInterval: 1000,
+		SnapshotInterval: DefaultSnapshotInterval,
 	})
 	if err != nil {
 		alog.Fatal(alog.CatSystem, "初始化存储失败", "error", err)
@@ -87,14 +97,49 @@ func main() {
 	// 创建 Runtime Core 事件驱动
 	core := runtime.NewCore(runtime.CoreConfig{
 		PublicIP:          cfg.PublicIP,
-		ReconcileInterval: 30,
+		ReconcileInterval: DefaultReconcileInterval,
 	}, storage)
 
-	// 创建 Session Layer（先订阅 EventBus，再启动插件恢复）
+	// 创建 Session Layer
 	sess := session.NewServer(core, cfg.Domain, cfg.TunnelPort, authManager)
 
-	// 初始化插件（插件 Run() 中的恢复事件需要 session handler 已订阅）
-	plugins := initPlugins(core, cfg)
+	// 创建插件管理器
+	pluginManager := plugin.NewManager(core, map[string]any{
+		"data_dir":    cfg.DataDir,
+		"tunnel_port": cfg.TunnelPort,
+		"public_ip":   cfg.PublicIP,
+	})
+
+	// 注册内置插件
+	pluginManager.Register("latency", func() plugin.Plugin { return latency.New() })
+	pluginManager.Register("persist", func() plugin.Plugin { return persist.New() })
+	pluginManager.Register("tag", func() plugin.Plugin { return tag.New() })
+	pluginManager.Register("file", func() plugin.Plugin { return file.New() })
+	pluginManager.Register("proxy-provider", func() plugin.Plugin { return proxyPlugin.New() })
+	pluginManager.Register("relay-provider", func() plugin.Plugin { return relayPlugin.New() })
+
+	// 转换插件配置格式
+	pluginsConfig := convertPluginsConfig(cfg.Plugins)
+
+	// 初始化并启动插件
+	pluginManager.InitAll(pluginsConfig)
+	pluginManager.StartAll()
+
+	// 注入 notifyFn 到 proxy 和 relay 插件
+	if p, ok := pluginManager.Get("proxy-provider"); ok {
+		if proxyP, ok := p.(*proxyPlugin.Plugin); ok {
+			proxyP.SetNotifyFn(func(clientID string, msg any) error {
+				return sess.SendToClient(clientID, msg)
+			})
+		}
+	}
+	if p, ok := pluginManager.Get("relay-provider"); ok {
+		if relayP, ok := p.(*relayPlugin.Plugin); ok {
+			relayP.SetNotifyFn(func(clientID string, msg any) error {
+				return sess.SendToClient(clientID, msg)
+			})
+		}
+	}
 
 	// 插件初始化完成，启动 Session Layer 的 EventBus 订阅
 	sess.StartEventSubscriptions()
@@ -102,7 +147,7 @@ func main() {
 	// 创建 Data Plane
 	dataplane := dataplane.NewServer(cfg.TunnelPort)
 
-	// 连接 Data Plane 和 Session (tunnel 连接配对)
+	// 连接 Data Plane 和 Session
 	dataplane.SetTunnelHandler(func(token string, conn net.Conn) {
 		sess.AcceptTunnel(token, conn)
 	})
@@ -113,25 +158,21 @@ func main() {
 	// 启动 Runtime Core
 	core.Start()
 
-	// 启动 Data Plane (goroutine)
+	// 启动 Data Plane
 	go func() {
 		if err := dataplane.Run(); err != nil {
 			alog.Error(alog.CatSystem, "Data Plane 异常退出", "error", err)
 		}
 	}()
 
-	// 启动 HTTP Control Plane (goroutine)
+	// 启动 HTTP Control Plane
 	go func() {
 		var err error
 		if cfg.TLSCert != "" && cfg.TLSKey != "" {
-			// 创建 TLS 配置 (请求客户端证书但不验证)
 			tlsConfig := &tls.Config{
 				ClientAuth: tls.RequestClientCert,
 			}
 
-			// 如果有 CA 证书，把它发给客户端作为可接受 CA 提示。
-			// 身份校验放在 Session Layer 的 register 流程里完成，避免 TLS 层
-			// 因旧证书或代理链路缺失客户端证书而直接拒绝连接。
 			caCertPath := cfg.DataDir + "/ca.crt"
 			if caCert, err := os.ReadFile(caCertPath); err == nil {
 				caCertPool := x509.NewCertPool()
@@ -150,7 +191,7 @@ func main() {
 		}
 	}()
 
-	alog.Info(alog.CatSystem, "Aether Server 就绪",
+	alog.Info(alog.CatSystem, "BBgrid Server 就绪",
 		"control_plane", cfg.Addr,
 		"data_plane", fmt.Sprintf(":%d", cfg.TunnelPort),
 	)
@@ -165,90 +206,34 @@ func main() {
 	// 优雅关闭
 	sess.Stop()
 	dataplane.Stop()
-	for _, plugin := range plugins {
-		plugin.Stop()
-	}
+	pluginManager.StopAll()
 	core.Stop()
 	storage.Close()
 	alog.Flush()
 
-	alog.Info(alog.CatSystem, "Aether Server 已关闭")
+	alog.Info(alog.CatSystem, "BBgrid Server 已关闭")
 }
 
-// initPlugins 初始化所有内置插件
-func initPlugins(core *runtime.Core, cfg *Config) []pluginImpl {
-	pluginConfig := map[string]any{
-		"data_dir": cfg.DataDir,
+// convertPluginsConfig 转换插件配置格式
+func convertPluginsConfig(plugins map[string]PluginConfig) map[string]map[string]any {
+	if plugins == nil {
+		return nil
 	}
-	running := make([]pluginImpl, 0, len(cfg.Plugins))
-
-	// 初始化插件列表
-	plugins := []struct {
-		name    string
-		factory func() pluginImpl
-	}{
-		{"latency", func() pluginImpl { return latency.New() }},
-		{"persist", func() pluginImpl { return persist.New() }},
-		{"tag", func() pluginImpl { return tag.New() }},
-		{"file", func() pluginImpl { return file.New() }},
-		{"proxy-provider", func() pluginImpl { return proxyPlugin.New() }},
-		{"relay-provider", func() pluginImpl { return relayPlugin.New() }},
+	result := make(map[string]map[string]any, len(plugins))
+	for name, pc := range plugins {
+		cfg := make(map[string]any)
+		cfg["enabled"] = pc.Enabled
+		for k, v := range pc.Config {
+			cfg[k] = v
+		}
+		result[name] = cfg
 	}
-
-	for _, p := range plugins {
-		// 检查插件是否启用 (默认启用)
-		enabled := true
-		var pluginSpecific map[string]any
-		if cfg.Plugins != nil {
-			if pc, ok := cfg.Plugins[p.name]; ok {
-				enabled = pc.Enabled
-				pluginSpecific = pc.Config
-			}
-		}
-
-		if !enabled {
-			alog.Info(alog.CatSystem, "插件已禁用", "name", p.name)
-			continue
-		}
-
-		// 合并全局配置 + 插件专属配置（插件专属优先）
-		finalConfig := make(map[string]any, len(pluginConfig)+len(pluginSpecific))
-		for k, v := range pluginConfig {
-			finalConfig[k] = v
-		}
-		for k, v := range pluginSpecific {
-			finalConfig[k] = v
-		}
-
-		plugin := p.factory()
-		if err := plugin.Init(core, finalConfig); err != nil {
-			alog.Error(alog.CatSystem, "插件初始化失败", "name", p.name, "error", err)
-			continue
-		}
-
-		// 启动插件 (goroutine)
-		go func(name string, p pluginImpl) {
-			if err := p.Run(); err != nil {
-				alog.Error(alog.CatSystem, "插件异常退出", "name", name, "error", err)
-			}
-		}(p.name, plugin)
-
-		running = append(running, plugin)
-		alog.Info(alog.CatSystem, "插件已启动", "name", p.name)
-	}
-
-	return running
-}
-
-// pluginImpl 插件接口 (简化版)
-type pluginImpl interface {
-	Init(core *runtime.Core, config map[string]any) error
-	Run() error
-	Stop()
+	return result
 }
 
 // ==================== Config ====================
 
+// Config 服务器配置
 type Config struct {
 	Addr        string                  `json:"addr"`
 	Domain      string                  `json:"domain"`
@@ -263,6 +248,7 @@ type Config struct {
 	Plugins     map[string]PluginConfig `json:"plugins"`
 }
 
+// PluginConfig 插件配置
 type PluginConfig struct {
 	Enabled bool           `json:"enabled"`
 	Config  map[string]any `json:"config"`
@@ -275,9 +261,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Addr:       ":9909",
-		TunnelPort: 9908,
-		DataDir:    "data",
+		Addr:       DefaultHTTPAddr,
+		TunnelPort: DefaultTunnelPort,
+		DataDir:    DefaultDataDir,
 	}
 
 	if err := json.Unmarshal(data, cfg); err != nil {
