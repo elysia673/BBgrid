@@ -120,3 +120,11 @@ type RelayStatusData struct {
 	Status    string `json:"status"`
 	Message   string `json:"message,omitempty"`
 }
+
+// ProxyOutboundData 出站代理数据。
+type ProxyOutboundData struct {
+	ServerHost string `json:"server_host"`
+	TunnelPort int    `json:"tunnel_port"`
+	Token      string `json:"token"`
+	LocalPort  int    `json:"local_port"`
+}
