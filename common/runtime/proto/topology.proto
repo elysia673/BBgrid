@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package aether.runtime;
+package bbgrid.runtime;
 
 option go_package = "BBgrid/common/runtime/pb";
 

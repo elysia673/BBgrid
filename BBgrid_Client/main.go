@@ -19,7 +19,7 @@ var (
 )
 
 func printVersion() {
-	fmt.Printf("BBgrid Client %s (%s) %s\n", Version, GitCommit, BuildTime)
+	fmt.Printf("Aether Client %s (%s) %s\n", Version, GitCommit, BuildTime)
 }
 
 func main() {
@@ -93,13 +93,13 @@ func main() {
 		}
 		serverURL = strings.TrimSuffix(serverURL, "/ws")
 
-		apiServer = NewFileAPIServer(cfg.Files.APIPort, serverURL, cfg.ClientID, cfg.DataDir)
+		apiServer = NewFileAPIServer(cfg.Files.APIPort, serverURL, cfg.ClientID, cfg.DataDir, cfg.ClientToken)
 		if err := apiServer.Start(); err != nil {
 			alog.Fatal(alog.CatSystem, "Failed to start file API server", "error", err)
 		}
 	}
 
-	client := NewClient(cfg.ServerURL, cfg.ClientID, cfg.ClientToken, cfg.PrivateKeyPath, cfg.PublicKeyPath, cfg.CertificatePath, cfg.UseHTTP, cfg.Insecure, cfg.TLSSNI, cfg.Origin, cfg.UDPTunnelKey, cfg.DataDir, time.Duration(cfg.ReconnectDelaySeconds)*time.Second, logCollector)
+	client := NewClient(cfg.ServerURL, cfg.ClientID, cfg.ClientToken, cfg.Voucher, cfg.PrivateKeyPath, cfg.PublicKeyPath, cfg.CertificatePath, cfg.UseHTTP, cfg.Insecure, cfg.TLSSNI, cfg.Origin, cfg.UDPTunnelKey, cfg.DataDir, time.Duration(cfg.ReconnectDelaySeconds)*time.Second, logCollector)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

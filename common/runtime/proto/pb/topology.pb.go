@@ -345,7 +345,7 @@ func (x *ListTopologiesResponse) GetTopologies() []*Topology {
 
 type TopologyUpdate struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
-	Type       UpdateType             `protobuf:"varint,1,opt,name=type,proto3,enum=aether.runtime.UpdateType" json:"type,omitempty"`
+	Type       UpdateType             `protobuf:"varint,1,opt,name=type,proto3,enum=bbgrid.runtime.UpdateType" json:"type,omitempty"`
 	Topologies []*Topology            `protobuf:"bytes,2,rep,name=topologies,proto3" json:"topologies,omitempty"`
 	// 被删除的 namespace 列表（仅 patch 时有意义）
 	DeletedNamespaces []string `protobuf:"bytes,3,rep,name=deleted_namespaces,json=deletedNamespaces,proto3" json:"deleted_namespaces,omitempty"`
@@ -472,11 +472,11 @@ func (x *Topology) GetMembers() []*Member {
 type Intent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 连接拓扑
-	Connectivity Connectivity `protobuf:"varint,1,opt,name=connectivity,proto3,enum=aether.runtime.Connectivity" json:"connectivity,omitempty"`
+	Connectivity Connectivity `protobuf:"varint,1,opt,name=connectivity,proto3,enum=bbgrid.runtime.Connectivity" json:"connectivity,omitempty"`
 	// 暴露级别
-	Exposure Exposure `protobuf:"varint,2,opt,name=exposure,proto3,enum=aether.runtime.Exposure" json:"exposure,omitempty"`
+	Exposure Exposure `protobuf:"varint,2,opt,name=exposure,proto3,enum=bbgrid.runtime.Exposure" json:"exposure,omitempty"`
 	// 中继策略
-	RelayPolicy   RelayPolicy `protobuf:"varint,3,opt,name=relay_policy,json=relayPolicy,proto3,enum=aether.runtime.RelayPolicy" json:"relay_policy,omitempty"`
+	RelayPolicy   RelayPolicy `protobuf:"varint,3,opt,name=relay_policy,json=relayPolicy,proto3,enum=bbgrid.runtime.RelayPolicy" json:"relay_policy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -590,29 +590,29 @@ var File_common_runtime_proto_topology_proto protoreflect.FileDescriptor
 
 const file_common_runtime_proto_topology_proto_rawDesc = "" +
 	"\n" +
-	"#common/runtime/proto/topology.proto\x12\x0eaether.runtime\"1\n" +
+	"#common/runtime/proto/topology.proto\x12\x0ebbgrid.runtime\"1\n" +
 	"\x10SubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"runtime_id\x18\x01 \x01(\tR\truntimeId\"\x17\n" +
 	"\x15ListTopologiesRequest\"R\n" +
 	"\x16ListTopologiesResponse\x128\n" +
 	"\n" +
-	"topologies\x18\x01 \x03(\v2\x18.aether.runtime.TopologyR\n" +
+	"topologies\x18\x01 \x03(\v2\x18.bbgrid.runtime.TopologyR\n" +
 	"topologies\"\xa9\x01\n" +
 	"\x0eTopologyUpdate\x12.\n" +
-	"\x04type\x18\x01 \x01(\x0e2\x1a.aether.runtime.UpdateTypeR\x04type\x128\n" +
+	"\x04type\x18\x01 \x01(\x0e2\x1a.bbgrid.runtime.UpdateTypeR\x04type\x128\n" +
 	"\n" +
-	"topologies\x18\x02 \x03(\v2\x18.aether.runtime.TopologyR\n" +
+	"topologies\x18\x02 \x03(\v2\x18.bbgrid.runtime.TopologyR\n" +
 	"topologies\x12-\n" +
 	"\x12deleted_namespaces\x18\x03 \x03(\tR\x11deletedNamespaces\"\x8a\x01\n" +
 	"\bTopology\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12.\n" +
-	"\x06intent\x18\x02 \x01(\v2\x16.aether.runtime.IntentR\x06intent\x120\n" +
-	"\amembers\x18\x03 \x03(\v2\x16.aether.runtime.MemberR\amembers\"\xc0\x01\n" +
+	"\x06intent\x18\x02 \x01(\v2\x16.bbgrid.runtime.IntentR\x06intent\x120\n" +
+	"\amembers\x18\x03 \x03(\v2\x16.bbgrid.runtime.MemberR\amembers\"\xc0\x01\n" +
 	"\x06Intent\x12@\n" +
-	"\fconnectivity\x18\x01 \x01(\x0e2\x1c.aether.runtime.ConnectivityR\fconnectivity\x124\n" +
-	"\bexposure\x18\x02 \x01(\x0e2\x18.aether.runtime.ExposureR\bexposure\x12>\n" +
-	"\frelay_policy\x18\x03 \x01(\x0e2\x1b.aether.runtime.RelayPolicyR\vrelayPolicy\"9\n" +
+	"\fconnectivity\x18\x01 \x01(\x0e2\x1c.bbgrid.runtime.ConnectivityR\fconnectivity\x124\n" +
+	"\bexposure\x18\x02 \x01(\x0e2\x18.bbgrid.runtime.ExposureR\bexposure\x12>\n" +
+	"\frelay_policy\x18\x03 \x01(\x0e2\x1b.bbgrid.runtime.RelayPolicyR\vrelayPolicy\"9\n" +
 	"\x06Member\x12\x1b\n" +
 	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12\x12\n" +
 	"\x04role\x18\x02 \x01(\tR\x04role*!\n" +
@@ -633,8 +633,8 @@ const file_common_runtime_proto_topology_proto_rawDesc = "" +
 	"\n" +
 	"\x06ALWAYS\x10\x022\xc3\x01\n" +
 	"\x0fTopologyService\x12O\n" +
-	"\tSubscribe\x12 .aether.runtime.SubscribeRequest\x1a\x1e.aether.runtime.TopologyUpdate0\x01\x12_\n" +
-	"\x0eListTopologies\x12%.aether.runtime.ListTopologiesRequest\x1a&.aether.runtime.ListTopologiesResponseB\x1aZ\x18BBgrid/common/runtime/pbb\x06proto3"
+	"\tSubscribe\x12 .bbgrid.runtime.SubscribeRequest\x1a\x1e.bbgrid.runtime.TopologyUpdate0\x01\x12_\n" +
+	"\x0eListTopologies\x12%.bbgrid.runtime.ListTopologiesRequest\x1a&.bbgrid.runtime.ListTopologiesResponseB\x1aZ\x18BBgrid/common/runtime/pbb\x06proto3"
 
 var (
 	file_common_runtime_proto_topology_proto_rawDescOnce sync.Once
@@ -651,31 +651,31 @@ func file_common_runtime_proto_topology_proto_rawDescGZIP() []byte {
 var file_common_runtime_proto_topology_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_common_runtime_proto_topology_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_common_runtime_proto_topology_proto_goTypes = []any{
-	(UpdateType)(0),                // 0: aether.runtime.UpdateType
-	(Connectivity)(0),              // 1: aether.runtime.Connectivity
-	(Exposure)(0),                  // 2: aether.runtime.Exposure
-	(RelayPolicy)(0),               // 3: aether.runtime.RelayPolicy
-	(*SubscribeRequest)(nil),       // 4: aether.runtime.SubscribeRequest
-	(*ListTopologiesRequest)(nil),  // 5: aether.runtime.ListTopologiesRequest
-	(*ListTopologiesResponse)(nil), // 6: aether.runtime.ListTopologiesResponse
-	(*TopologyUpdate)(nil),         // 7: aether.runtime.TopologyUpdate
-	(*Topology)(nil),               // 8: aether.runtime.Topology
-	(*Intent)(nil),                 // 9: aether.runtime.Intent
-	(*Member)(nil),                 // 10: aether.runtime.Member
+	(UpdateType)(0),                // 0: bbgrid.runtime.UpdateType
+	(Connectivity)(0),              // 1: bbgrid.runtime.Connectivity
+	(Exposure)(0),                  // 2: bbgrid.runtime.Exposure
+	(RelayPolicy)(0),               // 3: bbgrid.runtime.RelayPolicy
+	(*SubscribeRequest)(nil),       // 4: bbgrid.runtime.SubscribeRequest
+	(*ListTopologiesRequest)(nil),  // 5: bbgrid.runtime.ListTopologiesRequest
+	(*ListTopologiesResponse)(nil), // 6: bbgrid.runtime.ListTopologiesResponse
+	(*TopologyUpdate)(nil),         // 7: bbgrid.runtime.TopologyUpdate
+	(*Topology)(nil),               // 8: bbgrid.runtime.Topology
+	(*Intent)(nil),                 // 9: bbgrid.runtime.Intent
+	(*Member)(nil),                 // 10: bbgrid.runtime.Member
 }
 var file_common_runtime_proto_topology_proto_depIdxs = []int32{
-	8,  // 0: aether.runtime.ListTopologiesResponse.topologies:type_name -> aether.runtime.Topology
-	0,  // 1: aether.runtime.TopologyUpdate.type:type_name -> aether.runtime.UpdateType
-	8,  // 2: aether.runtime.TopologyUpdate.topologies:type_name -> aether.runtime.Topology
-	9,  // 3: aether.runtime.Topology.intent:type_name -> aether.runtime.Intent
-	10, // 4: aether.runtime.Topology.members:type_name -> aether.runtime.Member
-	1,  // 5: aether.runtime.Intent.connectivity:type_name -> aether.runtime.Connectivity
-	2,  // 6: aether.runtime.Intent.exposure:type_name -> aether.runtime.Exposure
-	3,  // 7: aether.runtime.Intent.relay_policy:type_name -> aether.runtime.RelayPolicy
-	4,  // 8: aether.runtime.TopologyService.Subscribe:input_type -> aether.runtime.SubscribeRequest
-	5,  // 9: aether.runtime.TopologyService.ListTopologies:input_type -> aether.runtime.ListTopologiesRequest
-	7,  // 10: aether.runtime.TopologyService.Subscribe:output_type -> aether.runtime.TopologyUpdate
-	6,  // 11: aether.runtime.TopologyService.ListTopologies:output_type -> aether.runtime.ListTopologiesResponse
+	8,  // 0: bbgrid.runtime.ListTopologiesResponse.topologies:type_name -> bbgrid.runtime.Topology
+	0,  // 1: bbgrid.runtime.TopologyUpdate.type:type_name -> bbgrid.runtime.UpdateType
+	8,  // 2: bbgrid.runtime.TopologyUpdate.topologies:type_name -> bbgrid.runtime.Topology
+	9,  // 3: bbgrid.runtime.Topology.intent:type_name -> bbgrid.runtime.Intent
+	10, // 4: bbgrid.runtime.Topology.members:type_name -> bbgrid.runtime.Member
+	1,  // 5: bbgrid.runtime.Intent.connectivity:type_name -> bbgrid.runtime.Connectivity
+	2,  // 6: bbgrid.runtime.Intent.exposure:type_name -> bbgrid.runtime.Exposure
+	3,  // 7: bbgrid.runtime.Intent.relay_policy:type_name -> bbgrid.runtime.RelayPolicy
+	4,  // 8: bbgrid.runtime.TopologyService.Subscribe:input_type -> bbgrid.runtime.SubscribeRequest
+	5,  // 9: bbgrid.runtime.TopologyService.ListTopologies:input_type -> bbgrid.runtime.ListTopologiesRequest
+	7,  // 10: bbgrid.runtime.TopologyService.Subscribe:output_type -> bbgrid.runtime.TopologyUpdate
+	6,  // 11: bbgrid.runtime.TopologyService.ListTopologies:output_type -> bbgrid.runtime.ListTopologiesResponse
 	10, // [10:12] is the sub-list for method output_type
 	8,  // [8:10] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name

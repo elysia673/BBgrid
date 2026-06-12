@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -198,21 +199,55 @@ func (rm *relayManager) runSource(ctx context.Context, sess *relaySession) {
 
 	alog.Info(alog.CatRelay, "中继源端: 正在连接中继", "session", sess.id, "role", "source", "server", sess.serverHost)
 
-	conn, err := rm.connectRelay(relayURL)
+	wsConn, err := rm.connectRelay(relayURL)
 	if err != nil {
 		alog.Error(alog.CatRelay, "中继源端: 中继连接失败", "error", err)
 		rm.sendEstablished(sess.id, false, err.Error())
 		return
 	}
 
-	mx := mux.New(conn)
+	// 用 net.Pipe 隔离 mux 和 WebSocket，避免两者抢读同一个连接
+	muxSide, relaySide := net.Pipe()
+	defer muxSide.Close()
+	defer relaySide.Close()
+
+	// relay 侧：WebSocket ↔ pipe
+	go func() {
+		defer relaySide.Close()
+		buf := make([]byte, 65536)
+		for {
+			n, err := wsConn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := relaySide.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer relaySide.Close()
+		buf := make([]byte, 65536)
+		for {
+			n, err := relaySide.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := wsConn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	// mux 侧：建在 pipe 上，不直接碰 WebSocket
+	mx := mux.New(muxSide)
 	sess.mx = mx
 
 	bindAddr := net.JoinHostPort(sess.sourceLocalIP, fmt.Sprintf("%d", sess.sourcePort))
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		alog.Error(alog.CatRelay, "中继源端: 监听失败", "addr", bindAddr, "error", err)
-		conn.Close()
+		wsConn.Close()
 		rm.sendEstablished(sess.id, false, err.Error())
 		return
 	}
@@ -262,15 +297,49 @@ func (rm *relayManager) runTarget(ctx context.Context, sess *relaySession) {
 
 	alog.Info(alog.CatRelay, "中继目标端: 正在连接中继", "session", sess.id, "role", "target", "server", sess.serverHost)
 
-	conn, err := rm.connectRelay(relayURL)
+	wsConn, err := rm.connectRelay(relayURL)
 	if err != nil {
 		alog.Error(alog.CatRelay, "中继目标端: 中继连接失败", "error", err)
 		rm.sendEstablished(sess.id, false, err.Error())
 		return
 	}
 
+	// 用 net.Pipe 隔离 mux 和 WebSocket
+	muxSide, relaySide := net.Pipe()
+	defer muxSide.Close()
+	defer relaySide.Close()
+
+	// relay 侧：WebSocket ↔ pipe
+	go func() {
+		defer relaySide.Close()
+		buf := make([]byte, 65536)
+		for {
+			n, err := wsConn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := relaySide.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer relaySide.Close()
+		buf := make([]byte, 65536)
+		for {
+			n, err := relaySide.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := wsConn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	// mux 侧：建在 pipe 上
 	localTarget := net.JoinHostPort(sess.targetLocalIP, fmt.Sprintf("%d", sess.targetPort))
-	mx := mux.New(conn)
+	mx := mux.New(muxSide)
 	mx.LocalTarget = localTarget
 	mx.OnNewChannel = mx.HandleChannel
 	sess.mx = mx
@@ -340,34 +409,17 @@ func bridgeChannel(localConn net.Conn, channel *mux.Channel, sessionID string) {
 	// 本地 → 隧道
 	go func() {
 		defer wg.Done()
-		defer localConn.Close()
-		buf := make([]byte, mux.MaxFrameSize)
-		for {
-			n, err := localConn.Read(buf)
-			if err != nil {
-				break
-			}
-			if err := channel.Mux.Send(channel.Port, buf[:n]); err != nil {
-				break
-			}
-		}
-		channel.Mux.CloseChannel(channel.Port)
+		io.Copy(channel, localConn)
 	}()
 
 	// 隧道 → 本地
 	go func() {
 		defer wg.Done()
-		defer localConn.Close()
-		for {
-			data, ok := channel.ReceiveBlocking()
-			if !ok {
-				break
-			}
-			if _, err := localConn.Write(data); err != nil {
-				break
-			}
-		}
+		io.Copy(localConn, channel)
 	}()
 
 	wg.Wait()
+	localConn.Close()
+	// CloseChannel 在两个 goroutine 都结束后才调用，避免 DataChan 被排空丢数据
+	channel.Mux.CloseChannel(channel.Port)
 }

@@ -72,11 +72,16 @@ type Channel struct {
 
 	sendQueue  chan frameOut
 	sendWindow int32
+	closing    bool // CloseChannel 标记，等 PktClose 发完再清理
 
 	// WINDOW_UPDATE 累积
 	pendingConsumed int32      // 累积待发送的消费量
 	lastWUTime      time.Time  // 上次发送 WINDOW_UPDATE 的时间
 	wuMu            sync.Mutex // 保护 pendingConsumed 和 lastWUTime
+
+	// io.Copy 读缓冲
+	reader     []byte // 上次 Read 剩余数据
+	readerMu   sync.Mutex
 }
 
 // Multiplexer 多路复用器
@@ -160,6 +165,10 @@ func (m *Multiplexer) writeLoop() {
 				m.Close()
 				return
 			}
+			// PktClose 发完后清理 channel
+			if cf.ptype == PktClose {
+				m.closeChannelLocal(cf.port)
+			}
 			madeProgress = true
 		default:
 		}
@@ -176,7 +185,17 @@ func (m *Multiplexer) writeLoop() {
 			select {
 			case <-m.writeNotify:
 				continue
-			case <-m.ctrlChan:
+			case cf := <-m.ctrlChan:
+				m.writeLock.Lock()
+				err := m.writeCtrl(cf.port, cf.ptype)
+				m.writeLock.Unlock()
+				if err != nil {
+					if !m.closed.Load() {
+						alog.Error(alog.CatMux, "ctrl write error", "error", err)
+					}
+					m.Close()
+					return
+				}
 				continue
 			case <-m.closeChan:
 				return
@@ -212,7 +231,17 @@ func (m *Multiplexer) writeLoop() {
 		if !madeProgress {
 			select {
 			case <-m.writeNotify:
-			case <-m.ctrlChan:
+			case cf := <-m.ctrlChan:
+				m.writeLock.Lock()
+				err := m.writeCtrl(cf.port, cf.ptype)
+				m.writeLock.Unlock()
+				if err != nil {
+					if !m.closed.Load() {
+						alog.Error(alog.CatMux, "ctrl write error", "error", err)
+					}
+					m.Close()
+					return
+				}
 			case <-m.closeChan:
 				return
 			}
@@ -408,13 +437,14 @@ func (m *Multiplexer) dispatchData(port uint16, data []byte) {
 	if ok {
 		select {
 		case ch.DataChan <- data:
-		case <-ch.CloseChan:
 		case <-m.closeChan:
 		}
 		return
 	}
 
+	// channel 不存在，尝试创建新 channel（relay 模式由 OnNewChannel 处理）
 	if m.OnNewChannel == nil {
+		alog.Warn(alog.CatMux, "dispatchData: no channel and no OnNewChannel", "port", port, "dataLen", len(data))
 		return
 	}
 
@@ -582,12 +612,12 @@ func (m *Multiplexer) OpenChannel(port uint16) (*Channel, error) {
 	return ch, nil
 }
 
-// CloseChannel 关闭通道并发送 CLOSE 帧
+// CloseChannel 关闭通道：只发 PktClose，不删 map，writeLoop 发完后再清理
 func (m *Multiplexer) CloseChannel(port uint16) {
-	m.closeChannelLocal(port)
-	if !m.closed.Load() {
-		go m.enqueueCtrl(port, PktClose)
+	if m.closed.Load() {
+		return
 	}
+	m.enqueueCtrl(port, PktClose)
 }
 
 func (m *Multiplexer) closeChannelLocal(port uint16) {
@@ -600,14 +630,16 @@ func (m *Multiplexer) closeChannelLocal(port uint16) {
 
 	if ok {
 		ch.closeOnce.Do(func() {
-			close(ch.CloseChan)
+			// 排空 sendQueue，避免丢失已入队的帧
 			for {
 				select {
-				case <-ch.DataChan:
+				case <-ch.sendQueue:
 				default:
-					return
+					goto done
 				}
 			}
+		done:
+			close(ch.CloseChan)
 		})
 	}
 }
@@ -720,6 +752,49 @@ func (ch *Channel) ReceiveBlocking() ([]byte, bool) {
 	}
 }
 
+// Read 实现 io.Reader，供 io.Copy 使用
+func (ch *Channel) Read(p []byte) (int, error) {
+	ch.readerMu.Lock()
+	// 有上次剩余数据，先消费
+	if len(ch.reader) > 0 {
+		n := copy(p, ch.reader)
+		ch.reader = ch.reader[n:]
+		if len(ch.reader) == 0 {
+			ch.reader = nil
+		}
+		ch.readerMu.Unlock()
+		return n, nil
+	}
+	ch.readerMu.Unlock()
+
+	data, ok := ch.ReceiveBlocking()
+	if !ok {
+		return 0, io.EOF
+	}
+
+	n := copy(p, data)
+	if n < len(data) {
+		ch.readerMu.Lock()
+		ch.reader = data[n:]
+		ch.readerMu.Unlock()
+	} else {
+		// 整条消息已消费完毕，通知 sender 有空间
+		// 只在消息完整消费后才发 window update，避免 sender 过快灌数据
+		ch.Mux.SendWindowUpdate(ch.Port, len(data))
+	}
+	return n, nil
+}
+
+// Write 实现 io.Writer，供 io.Copy 使用
+func (ch *Channel) Write(p []byte) (int, error) {
+	data := make([]byte, len(p))
+	copy(data, p)
+	if err := ch.Mux.Send(ch.Port, data); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
 func (m *Multiplexer) HandleChannel(ch *Channel) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -742,59 +817,19 @@ func (m *Multiplexer) HandleChannel(ch *Channel) {
 	// 隧道 → 本地
 	go func() {
 		defer wg.Done()
-		defer localConn.Close()
-		for {
-			data, ok := ch.ReceiveBlocking()
-			if !ok {
-				return
-			}
-			if _, err := localConn.Write(data); err != nil {
-				if err != io.EOF {
-					alog.Error(alog.CatTunnel, "local write error", "port", ch.Port, "error", err)
-				}
-				return
-			}
-			// 消费数据后发送窗口更新（累积式）
-			m.SendWindowUpdate(ch.Port, len(data))
+		io.Copy(localConn, ch)
+		if tc, ok := localConn.(*net.TCPConn); ok {
+			tc.CloseWrite()
 		}
 	}()
 
 	// 本地 → 隧道
 	go func() {
 		defer wg.Done()
-
-		// 尝试 splice
-		if tc, ok := localConn.(*net.TCPConn); ok && m.SpliceAvailable() {
-			if f, err := tc.File(); err == nil {
-				fd := int(f.Fd())
-				for {
-					if err := m.SpliceSend(ch.Port, fd, MaxFrameSize); err != nil {
-						break
-					}
-				}
-				f.Close()
-				m.CloseChannel(ch.Port)
-				return
-			}
-		}
-		// 回退：Read→Send
-		buf := make([]byte, MaxFrameSize)
-		for {
-			n, err := localConn.Read(buf)
-			if err != nil {
-				if err != io.EOF {
-					alog.Error(alog.CatTunnel, "local read error", "port", ch.Port, "error", err)
-				}
-				break
-			}
-			if err := m.Send(ch.Port, buf[:n]); err != nil {
-				alog.Error(alog.CatTunnel, "send error", "port", ch.Port, "error", err)
-				break
-			}
-		}
+		io.Copy(ch, localConn)
 		m.CloseChannel(ch.Port)
 	}()
 
 	wg.Wait()
-	alog.Info(alog.CatTunnel, "channel closed", "port", ch.Port)
+	localConn.Close()
 }

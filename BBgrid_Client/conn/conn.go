@@ -60,12 +60,12 @@ func (c *Connection) readPump() {
 	defer c.Close()
 
 	c.wsConn.SetReadLimit(maxMessageSize)
-	_ = c.wsConn.SetReadDeadline(time.Now().Add(pongWait))
 	c.wsConn.SetPongHandler(func(string) error {
 		return c.wsConn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
 	for {
+		_ = c.wsConn.SetReadDeadline(time.Now().Add(pongWait))
 		_, msg, err := c.wsConn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {

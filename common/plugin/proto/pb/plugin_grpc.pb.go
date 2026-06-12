@@ -19,11 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PluginService_Subscribe_FullMethodName = "/aether.plugin.PluginService/Subscribe"
-	PluginService_Publish_FullMethodName   = "/aether.plugin.PluginService/Publish"
-	PluginService_Register_FullMethodName  = "/aether.plugin.PluginService/Register"
-	PluginService_Execute_FullMethodName   = "/aether.plugin.PluginService/Execute"
-	PluginService_Heartbeat_FullMethodName = "/aether.plugin.PluginService/Heartbeat"
+	PluginService_Subscribe_FullMethodName = "/bbgrid.plugin.PluginService/Subscribe"
+	PluginService_Publish_FullMethodName   = "/bbgrid.plugin.PluginService/Publish"
+	PluginService_Register_FullMethodName  = "/bbgrid.plugin.PluginService/Register"
+	PluginService_Execute_FullMethodName   = "/bbgrid.plugin.PluginService/Execute"
+	PluginService_Heartbeat_FullMethodName = "/bbgrid.plugin.PluginService/Heartbeat"
 )
 
 // PluginServiceClient is the client API for PluginService service.
@@ -266,7 +266,7 @@ func _PluginService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec 
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var PluginService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "aether.plugin.PluginService",
+	ServiceName: "bbgrid.plugin.PluginService",
 	HandlerType: (*PluginServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

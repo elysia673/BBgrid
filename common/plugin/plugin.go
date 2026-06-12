@@ -21,7 +21,7 @@ type Dispatcher interface {
 
 // StateStore 状态存储接口
 type StateStore interface {
-	// 根据需要扩展
+	// 各插件通过 structural typing 自行定义所需方法子集
 }
 
 // Plugin 插件接口

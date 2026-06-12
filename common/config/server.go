@@ -66,34 +66,34 @@ func LoadServer(path string) (*ServerConfig, error) {
 	}
 
 	// server settings
-	cfg.Server.Addr = envStr("AETHER_SERVER_ADDR", cfg.Server.Addr)
-	cfg.Server.Domain = envStr("AETHER_DOMAIN", cfg.Server.Domain)
-	cfg.Server.TunnelPort = envInt("AETHER_TUNNEL_PORT", cfg.Server.TunnelPort)
+	cfg.Server.Addr = envStr("BBGRID_SERVER_ADDR", cfg.Server.Addr)
+	cfg.Server.Domain = envStr("BBGRID_DOMAIN", cfg.Server.Domain)
+	cfg.Server.TunnelPort = envInt("BBGRID_TUNNEL_PORT", cfg.Server.TunnelPort)
 
 	// tls settings
-	cfg.TLS.CertFile = envStr("AETHER_TLS_CERT", cfg.TLS.CertFile)
-	cfg.TLS.KeyFile = envStr("AETHER_TLS_KEY", cfg.TLS.KeyFile)
-	if v := os.Getenv("AETHER_TLS_ENABLED"); v != "" {
+	cfg.TLS.CertFile = envStr("BBGRID_TLS_CERT", cfg.TLS.CertFile)
+	cfg.TLS.KeyFile = envStr("BBGRID_TLS_KEY", cfg.TLS.KeyFile)
+	if v := os.Getenv("BBGRID_TLS_ENABLED"); v != "" {
 		cfg.TLS.Enabled = v == "true" || v == "1"
 	}
 
 	// auth settings
-	cfg.Auth.APIKey = envStr("AETHER_API_KEY", cfg.Auth.APIKey)
-	cfg.Auth.ClientToken = envStr("AETHER_CLIENT_TOKEN", cfg.Auth.ClientToken)
+	cfg.Auth.APIKey = envStr("BBGRID_API_KEY", cfg.Auth.APIKey)
+	cfg.Auth.ClientToken = envStr("BBGRID_CLIENT_TOKEN", cfg.Auth.ClientToken)
 
 	// other
-	cfg.Storage = envStr("AETHER_STORAGE", cfg.Storage)
-	cfg.DataDir = envStr("AETHER_DATA_DIR", cfg.DataDir)
-	cfg.LogPath = envStr("AETHER_LOG_PATH", cfg.LogPath)
-	cfg.PublicIP = envStr("AETHER_PUBLIC_IP", cfg.PublicIP)
-	cfg.UDPTunnelKey = envStr("AETHER_UDP_TUNNEL_KEY", cfg.UDPTunnelKey)
+	cfg.Storage = envStr("BBGRID_STORAGE", cfg.Storage)
+	cfg.DataDir = envStr("BBGRID_DATA_DIR", cfg.DataDir)
+	cfg.LogPath = envStr("BBGRID_LOG_PATH", cfg.LogPath)
+	cfg.PublicIP = envStr("BBGRID_PUBLIC_IP", cfg.PublicIP)
+	cfg.UDPTunnelKey = envStr("BBGRID_UDP_TUNNEL_KEY", cfg.UDPTunnelKey)
 
 	// validate
 	if cfg.Auth.APIKey == "" {
-		return nil, fmt.Errorf("api_key is required (set in config file or AETHER_API_KEY env)")
+		return nil, fmt.Errorf("api_key is required (set in config file or BBGRID_API_KEY env)")
 	}
 	if cfg.Auth.ClientToken == "" {
-		return nil, fmt.Errorf("client_token is required (set in config file or AETHER_CLIENT_TOKEN env)")
+		return nil, fmt.Errorf("client_token is required (set in config file or BBGRID_CLIENT_TOKEN env)")
 	}
 
 	return cfg, nil

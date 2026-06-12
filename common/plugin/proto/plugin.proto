@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package aether.plugin;
+package bbgrid.plugin;
 
 option go_package = "BBgrid/common/plugin/proto/pb";
 

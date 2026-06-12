@@ -19,12 +19,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Client 是 BBgrid 客户端，维护与服务器的 WebSocket 连接，
+// Client 是 Aether 客户端，维护与服务器的 WebSocket 连接，
 // 处理注册并将隧道管理委托给 handler 包。
 type Client struct {
 	url            string
 	id             string
 	token          string
+	voucher        string
 	privateKeyPath string
 	publicKeyPath  string
 	certPath       string
@@ -40,11 +41,12 @@ type Client struct {
 }
 
 // NewClient 创建新的客户端实例。
-func NewClient(url, id, token, privateKeyPath, publicKeyPath, certPath string, useHTTP, insecure bool, tlsSNI, origin, udpTunnelKey, dataDir string, reconnectDelay time.Duration, logCollector *LogCollector) *Client {
+func NewClient(url, id, token, voucher, privateKeyPath, publicKeyPath, certPath string, useHTTP, insecure bool, tlsSNI, origin, udpTunnelKey, dataDir string, reconnectDelay time.Duration, logCollector *LogCollector) *Client {
 	return &Client{
 		url:            url,
 		id:             id,
 		token:          token,
+		voucher:        voucher,
 		privateKeyPath: privateKeyPath,
 		publicKeyPath:  publicKeyPath,
 		certPath:       certPath,
@@ -65,30 +67,60 @@ func fileExists(path string) bool {
 	return !os.IsNotExist(err)
 }
 
+func mustReadFile(path string) []byte {
+	data, _ := os.ReadFile(path)
+	return data
+}
+
 // Run 启动客户端主循环，支持自动重连。
 func (c *Client) Run() {
-	// 检查证书文件是否存在，如果不存在则生成密钥并提交申请
-	if !fileExists(c.certPath) || !fileExists(c.privateKeyPath) {
-		alog.Info(alog.CatAuth, "证书或私钥不存在，开始注册")
+	// 检查私钥和证书是否匹配
+	keyPairGenerated := false
+	if fileExists(c.certPath) && fileExists(c.privateKeyPath) {
+		if _, err := tls.LoadX509KeyPair(c.certPath, c.privateKeyPath); err != nil {
+			alog.Warn(alog.CatAuth, "密钥与证书不匹配，重新注册", "error", err)
+			os.Remove(c.certPath)
+			os.Remove(c.privateKeyPath)
+		}
+	}
 
-		// 生成 ECC 密钥对
+	// 1. 检查私钥，没有才生成
+	if !fileExists(c.privateKeyPath) {
+		alog.Info(alog.CatAuth, "私钥不存在，生成新密钥对")
 		if err := register.GenerateKeyPair(c.privateKeyPath, c.publicKeyPath); err != nil {
 			alog.Fatal(alog.CatAuth, "生成密钥对失败", "error", err)
 		}
 		alog.Info(alog.CatAuth, "密钥对已生成")
+		keyPairGenerated = true
+	}
 
-		// 先检查是否已签发证书
-		status, certPEM, err := checkApprovalStatus(c.url, c.id, c.token, c.insecure)
-		if err == nil && status == "approved" && certPEM != "" {
-			// 证书已签发，直接保存
-			if err := os.WriteFile(c.certPath, []byte(certPEM), 0600); err != nil {
-				alog.Fatal(alog.CatAuth, "保存证书失败", "error", err)
+	// 2. 检查证书，没有才注册
+	if !fileExists(c.certPath) {
+		alog.Info(alog.CatAuth, "证书不存在，开始注册")
+
+		if !keyPairGenerated {
+			// 用的是旧密钥对，先查服务器有没有已签发的证书
+			if status, certPEM, err := checkApprovalStatus(c.url, c.id, c.token, c.insecure); err == nil && status == "approved" && certPEM != "" {
+				// 校验证书是否匹配当前私钥
+				if _, err := tls.X509KeyPair([]byte(certPEM), mustReadFile(c.privateKeyPath)); err == nil {
+					if err := os.WriteFile(c.certPath, []byte(certPEM), 0600); err != nil {
+						alog.Fatal(alog.CatAuth, "保存证书失败", "error", err)
+					}
+					alog.Info(alog.CatAuth, "证书已签发，直接下载")
+					goto connect
+				}
+				alog.Warn(alog.CatAuth, "服务器上的证书与本地密钥不匹配，重新注册")
 			}
-			alog.Info(alog.CatAuth, "证书已存在，直接下载")
+		}
+
+		// 走注册流程
+		if c.voucher != "" {
+			if err := submitVoucherRegistration(c.url, c.id, c.voucher, c.publicKeyPath, c.certPath, c.insecure); err != nil {
+				alog.Fatal(alog.CatAuth, "凭证注册失败", "error", err)
+			}
+			alog.Info(alog.CatAuth, "凭证注册成功，证书已签发")
 		} else {
-			// 提交注册申请
 			if err := submitRegistration(c.url, c.id, c.token, c.publicKeyPath, c.insecure); err != nil {
-				// 如果返回 "already exists"，说明已提交申请，等待审核
 				if strings.Contains(err.Error(), "already exists") {
 					alog.Info(alog.CatAuth, "注册申请已存在，等待管理员审核")
 				} else {
@@ -97,14 +129,15 @@ func (c *Client) Run() {
 			} else {
 				alog.Info(alog.CatAuth, "注册申请已提交，等待管理员审核")
 			}
-
-			// 阻塞等待证书签发
 			if err := waitForApprovalAndDownloadCert(c.url, c.id, c.token, c.certPath, c.insecure, c.stopCh); err != nil {
 				alog.Fatal(alog.CatAuth, "等待审核失败", "error", err)
 			}
 		}
 		alog.Info(alog.CatAuth, "证书已签发并下载，继续启动")
 	}
+
+connect:
+	// 3. 连接服务器
 
 	for {
 		select {
@@ -246,9 +279,13 @@ func (c *Client) connectAndServe() error {
 		if err != nil {
 			return fmt.Errorf("load X509 key pair: %w", err)
 		}
+		alog.Info(alog.CatClient, "client certificate loaded", "cert", c.certPath, "key", c.privateKeyPath)
 
 		dialer.TLSClientConfig = &tls.Config{
-			Certificates:       []tls.Certificate{cert},
+			Certificates: []tls.Certificate{cert},
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return &cert, nil
+			},
 			MinVersion:         tls.VersionTLS12,
 			InsecureSkipVerify: c.insecure,
 		}
@@ -265,9 +302,9 @@ func (c *Client) connectAndServe() error {
 		}
 	}
 
-	wsConn, _, err := dialer.Dial(c.url, header)
+	wsConn, resp, err := dialer.Dial(c.url, header)
 	if err != nil {
-		return err
+		return formatHandshakeError(err, resp)
 	}
 
 	// 在启动消息泵之前进行注册。
@@ -302,6 +339,23 @@ func (c *Client) connectAndServe() error {
 	return nil
 }
 
+func formatHandshakeError(err error, resp *http.Response) error {
+	if resp == nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if readErr != nil {
+		return fmt.Errorf("%w (status=%s, read body: %v)", err, resp.Status, readErr)
+	}
+	bodyText := strings.TrimSpace(string(body))
+	if bodyText == "" {
+		return fmt.Errorf("%w (status=%s)", err, resp.Status)
+	}
+	return fmt.Errorf("%w (status=%s, body=%q)", err, resp.Status, bodyText)
+}
+
 // registerRaw 在消息泵启动之前执行注册握手。
 func (c *Client) registerRaw(wsConn *websocket.Conn) error {
 	regMsg := model.WSMessage{
@@ -325,8 +379,18 @@ func (c *Client) registerRaw(wsConn *websocket.Conn) error {
 	}
 
 	var regData model.RegisteredData
-	if dataStr, ok := resp.Data.(string); ok {
-		if err := json.Unmarshal([]byte(dataStr), &regData); err != nil {
+	switch data := resp.Data.(type) {
+	case model.RegisteredData:
+		regData = data
+	case map[string]any:
+		if v, ok := data["client_id"].(string); ok {
+			regData.ClientID = v
+		}
+		if v, ok := data["server_host"].(string); ok {
+			regData.ServerHost = v
+		}
+	case string:
+		if err := json.Unmarshal([]byte(data), &regData); err != nil {
 			return fmt.Errorf("unmarshal registered data: %w", err)
 		}
 	}
@@ -390,5 +454,70 @@ func submitRegistration(serverURL, clientID, token, publicKeyPath string, insecu
 		return fmt.Errorf("registration failed: %s", result.Msg)
 	}
 
+	return nil
+}
+
+// submitVoucherRegistration 凭证注册：提交凭证 + 公钥，自动 approve，保存证书
+func submitVoucherRegistration(serverURL, clientID, voucher, publicKeyPath, certPath string, insecure bool) error {
+	pubKeyData, err := os.ReadFile(publicKeyPath)
+	if err != nil {
+		return fmt.Errorf("read public key: %w", err)
+	}
+
+	body := map[string]string{
+		"client_id":  clientID,
+		"public_key": string(pubKeyData),
+		"voucher":    voucher,
+	}
+	bodyData, _ := json.Marshal(body)
+
+	apiURL := serverURL
+	if len(apiURL) > 6 && apiURL[:6] == "wss://" {
+		apiURL = "https://" + apiURL[6:]
+	} else if len(apiURL) > 5 && apiURL[:5] == "ws://" {
+		apiURL = "http://" + apiURL[5:]
+	}
+	if len(apiURL) > 3 && apiURL[len(apiURL)-3:] == "/ws" {
+		apiURL = apiURL[:len(apiURL)-3] + "/api/v1/register/voucher"
+	} else {
+		apiURL = apiURL + "/api/v1/register/voucher"
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
+		},
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Post(apiURL, "application/json", bytes.NewReader(bodyData))
+	if err != nil {
+		return fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Certificate string `json:"certificate"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("unmarshal response: %w (body: %.200s)", err, string(respBody))
+	}
+	if result.Code != 0 {
+		return fmt.Errorf("voucher registration failed: %s", result.Msg)
+	}
+	if result.Data.Certificate == "" {
+		return fmt.Errorf("no certificate returned")
+	}
+
+	// 保存证书到配置指定的路径
+	if err := os.WriteFile(certPath, []byte(result.Data.Certificate), 0600); err != nil {
+		return fmt.Errorf("save certificate: %w", err)
+	}
+
+	alog.Info(alog.CatAuth, "凭证注册成功，证书已保存", "cert", certPath)
 	return nil
 }

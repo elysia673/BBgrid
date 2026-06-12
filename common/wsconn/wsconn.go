@@ -32,6 +32,9 @@ func New(ws *websocket.Conn) net.Conn {
 //
 // 从 WebSocket 消息中读取数据，自动处理消息边界。
 func (w *wsConn) Read(b []byte) (int, error) {
+	if w.closed {
+		return 0, net.ErrClosed
+	}
 	w.readMu.Lock()
 	defer w.readMu.Unlock()
 
@@ -55,6 +58,9 @@ func (w *wsConn) Read(b []byte) (int, error) {
 }
 
 func (w *wsConn) Write(b []byte) (int, error) {
+	if w.closed {
+		return 0, net.ErrClosed
+	}
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
 
@@ -81,7 +87,10 @@ func (w *wsConn) RemoteAddr() net.Addr {
 }
 
 func (w *wsConn) SetDeadline(t time.Time) error {
-	return w.conn.SetReadDeadline(t)
+	if err := w.conn.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return w.conn.SetWriteDeadline(t)
 }
 
 func (w *wsConn) SetReadDeadline(t time.Time) error {

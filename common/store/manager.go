@@ -29,25 +29,25 @@ type StorageConfig struct {
 
 // NewStorageManager 创建存储管理器
 func NewStorageManager(config StorageConfig) (*StorageManager, error) {
-	// 设置默认值
+	// 设置默认值 每累积 1000 个事件就自动创建一个状态快照
 	if config.SnapshotInterval <= 0 {
 		config.SnapshotInterval = 1000
 	}
 
-	// 创建事件存储
+	// 创建事件存储 历史记录
 	events, err := NewEventStore(config.DataDir)
 	if err != nil {
 		return nil, err
 	}
 
-	// 创建快照存储
+	// 创建快照存储 固化状态
 	snapshots, err := NewSnapshotStore(config.DataDir)
 	if err != nil {
 		events.Close()
 		return nil, err
 	}
 
-	// 创建元数据存储
+	// 创建元数据存储 维护当前状态用于快速查询
 	meta, err := NewMetaStore(config.DataDir)
 	if err != nil {
 		events.Close()
@@ -157,15 +157,40 @@ func (m *StorageManager) DeleteResource(key proto.ResourceKey) error {
 
 // createSnapshot 创建快照
 func (m *StorageManager) createSnapshot() {
-	// 获取当前状态
-	state := m.meta.ListAll()
+	metaState := m.meta.ListAll()
+	state := make(map[string]map[string]any)
+	for typeName, resources := range metaState {
+		switch typeName {
+		case "proxy":
+			normalized := make(map[string]any, len(resources))
+			for metaKey, val := range resources {
+				rk, err := proto.ParseResourceKey(metaKey)
+				if err != nil {
+					normalized[metaKey] = val
+				} else {
+					normalized[rk.Name] = val
+				}
+			}
+			state["desired_proxies"] = normalized
+		case "relay":
+			normalized := make(map[string]any, len(resources))
+			for metaKey, val := range resources {
+				rk, err := proto.ParseResourceKey(metaKey)
+				if err != nil {
+					normalized[metaKey] = val
+				} else {
+					normalized[rk.Name] = val
+				}
+			}
+			state["desired_relays"] = normalized
+		default:
+			state[typeName] = resources
+		}
+	}
 
-	// 获取当前事件序列号
 	sequence := m.events.Count()
 
-	// 保存快照
 	if err := m.snapshots.Save(state, int64(sequence)); err != nil {
-		// 快照失败不影响主流程
 		return
 	}
 }
@@ -174,6 +199,9 @@ func (m *StorageManager) createSnapshot() {
 func (m *StorageManager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// 关闭前创建最终快照
+	m.createSnapshot()
 
 	var errs []error
 
