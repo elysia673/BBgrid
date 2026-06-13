@@ -32,6 +32,7 @@ type Session struct {
 	server       *Server // 反向引用，用于操作 sessions
 	send         chan []byte
 	done         chan struct{}
+	writeDone    chan struct{} // writePump 退出信号
 	closeOnce    sync.Once
 	registered   chan struct{}
 	registerOnce sync.Once
@@ -55,6 +56,7 @@ func NewSession(conn *websocket.Conn, request *http.Request, clientID string, is
 		server:      server,
 		send:        make(chan []byte, 256),
 		done:        make(chan struct{}),
+		writeDone:   make(chan struct{}),
 		registered:  make(chan struct{}),
 		isTemp:      isTemp,
 		remoteAddr:  conn.RemoteAddr().String(),
@@ -125,7 +127,7 @@ func (s *Session) writePump() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer func() {
 		ticker.Stop()
-		// 注意：不在这里关闭连接，由 Close() 方法统一处理
+		close(s.writeDone) // 通知 Close() writePump 已退出
 	}()
 
 	for {
@@ -441,7 +443,7 @@ func pushCert(s *Session, clientID, certPEM string) {
 // Close 关闭会话
 func (s *Session) Close() error {
 	s.closeOnce.Do(func() {
-		close(s.done)
+		close(s.done) // 通知 writePump 退出
 
 		// 发布 client DELETED 事件
 		s.mu.RLock()
@@ -454,8 +456,8 @@ func (s *Session) Close() error {
 
 		alog.Info(alog.CatWS, "会话关闭", "client_id", clientID)
 	})
-	// conn.Close() 在 closeOnce 外调用，避免 writePump 还在写时 close 导致 panic。
-	// writePump 通过 <-done 退出后再也不写 conn，此时关闭安全。
+	// 等待 writePump 退出后再关闭连接，避免竞态
+	<-s.writeDone
 	s.conn.Close()
 	return nil
 }
@@ -533,7 +535,21 @@ func NewServer(core *runtime.Core, domain string, tunnelPort int, authManager *a
 		upgrader: &websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
-			CheckOrigin:     func(r *http.Request) bool { return true },
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true // 非浏览器客户端（如 CLI、SDK）
+				}
+				// 检查 Origin 是否与 Host 匹配（同源请求）
+				host := r.Host
+				if host == "" {
+					return true // 无法验证，允许通过
+				}
+				// 构建期望的 Origin（支持 http 和 https）
+				expectedHTTPS := fmt.Sprintf("https://%s", host)
+				expectedHTTP := fmt.Sprintf("http://%s", host)
+				return origin == expectedHTTPS || origin == expectedHTTP
+			},
 		},
 		pendingMap:         make(map[string]*pendingEntry),
 		stopCh:             make(chan struct{}),
@@ -931,6 +947,7 @@ func (s *Server) startTunnelLoop(proxy runtime.ProxyState) {
 			if err := s.SendToClient(proxy.ClientID, msg); err != nil {
 				alog.Error(alog.CatWS, "通知客户端建立隧道失败",
 					"client_id", proxy.ClientID, "port", proxy.RemotePort, "error", err)
+				s.unregisterPending(tunnelToken) // 清理 pending entry
 				conn.Close()
 				continue
 			}
@@ -947,6 +964,7 @@ func (s *Server) startTunnelLoop(proxy runtime.ProxyState) {
 				case <-time.After(60 * time.Second):
 					alog.Warn(alog.CatSystem, "隧道连接超时",
 						"client_id", proxy.ClientID, "port", proxy.RemotePort)
+					s.unregisterPending(tunnelToken) // 清理 pending entry
 					conn.Close()
 				case <-s.stopCh:
 					conn.Close()
@@ -1018,8 +1036,10 @@ func (s *Server) cleanupExpired() {
 	now := time.Now()
 	for token, entry := range s.pendingMap {
 		if now.Sub(entry.createdAt) > 60*time.Second {
-			// 发送 nil 而非 close，避免发送方 panic
-			entry.ch <- nil
+			select {
+			case entry.ch <- nil:
+			default:
+			}
 			delete(s.pendingMap, token)
 		}
 	}
@@ -1105,7 +1125,11 @@ func (s *Server) HandleTunnel(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alog.Info(alog.CatWS, "Tunnel 连接已建立", "token", token[:8]+"...")
+	tokenDisplay := token
+	if len(token) > 8 {
+		tokenDisplay = token[:8] + "..."
+	}
+	alog.Info(alog.CatWS, "Tunnel 连接已建立", "token", tokenDisplay)
 
 	// 等待连接关闭
 	for {

@@ -40,7 +40,7 @@ func TestInitMTLS_SetsTLSConfig(t *testing.T) {
 	}
 }
 
-func TestInitToken_DoesNotSetTLSConfig(t *testing.T) {
+func TestInitToken_SetsTLSConfig(t *testing.T) {
 	mgr := NewManager(Config{
 		Mode:  AuthModeToken,
 		Token: "test-token",
@@ -52,8 +52,8 @@ func TestInitToken_DoesNotSetTLSConfig(t *testing.T) {
 	}
 
 	tlsCfg := mgr.GetTLSConfig()
-	if tlsCfg != nil {
-		t.Fatal("BUG: initToken should NOT set TLS config")
+	if tlsCfg == nil {
+		t.Fatal("BUG: initToken should set TLS config for wss:// connections")
 	}
-	t.Log("✅ initToken does not set TLS config")
+	t.Log("✅ initToken sets TLS config for wss:// connections")
 }

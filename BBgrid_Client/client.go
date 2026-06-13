@@ -34,14 +34,12 @@ type Client struct {
 	tlsSNI         string
 	origin         string
 	udpTunnelKey   string
-	dataDir        string
 	reconnectDelay time.Duration
 	stopCh         chan struct{}
-	logCollector   *LogCollector
 }
 
 // NewClient 创建新的客户端实例。
-func NewClient(url, id, token, voucher, privateKeyPath, publicKeyPath, certPath string, useHTTP, insecure bool, tlsSNI, origin, udpTunnelKey, dataDir string, reconnectDelay time.Duration, logCollector *LogCollector) *Client {
+func NewClient(url, id, token, voucher, privateKeyPath, publicKeyPath, certPath string, useHTTP, insecure bool, tlsSNI, origin, udpTunnelKey string, reconnectDelay time.Duration) *Client {
 	return &Client{
 		url:            url,
 		id:             id,
@@ -55,10 +53,8 @@ func NewClient(url, id, token, voucher, privateKeyPath, publicKeyPath, certPath 
 		tlsSNI:         tlsSNI,
 		origin:         origin,
 		udpTunnelKey:   udpTunnelKey,
-		dataDir:        dataDir,
 		reconnectDelay: reconnectDelay,
 		stopCh:         make(chan struct{}),
-		logCollector:   logCollector,
 	}
 }
 
@@ -207,12 +203,15 @@ func checkApprovalStatus(serverURL, clientID, token string, insecure bool) (stri
 		apiURL = "http://" + apiURL[5:]
 	}
 
-	// 拼接 API 路径
+	// 拼接 API 路径 - 使用专门的证书查询端点
 	if len(apiURL) > 3 && apiURL[len(apiURL)-3:] == "/ws" {
-		apiURL = apiURL[:len(apiURL)-3] + "/api/v1/register/list"
+		apiURL = apiURL[:len(apiURL)-3] + "/api/v1/register/cert"
 	} else {
-		apiURL = apiURL + "/api/v1/register/list"
+		apiURL = apiURL + "/api/v1/register/cert"
 	}
+
+	// 添加查询参数
+	apiURL = fmt.Sprintf("%s?client_id=%s&token=%s", apiURL, clientID, token)
 
 	// 发送请求
 	req, err := http.NewRequest("GET", apiURL, nil)
@@ -236,11 +235,8 @@ func checkApprovalStatus(serverURL, clientID, token string, insecure bool) (stri
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
-			Clients []struct {
-				ClientID    string `json:"client_id"`
-				CertPrefix  string `json:"cert_prefix"`
-				Certificate string `json:"certificate"`
-			} `json:"clients"`
+			Status      string `json:"status"`
+			Certificate string `json:"certificate"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
@@ -251,14 +247,7 @@ func checkApprovalStatus(serverURL, clientID, token string, insecure bool) (stri
 		return "", "", fmt.Errorf("query failed")
 	}
 
-	// 查找当前客户端
-	for _, c := range result.Data.Clients {
-		if c.ClientID == clientID {
-			return "approved", c.Certificate, nil
-		}
-	}
-
-	return "pending", "", nil
+	return result.Data.Status, result.Data.Certificate, nil
 }
 
 // Stop 通知客户端关闭。

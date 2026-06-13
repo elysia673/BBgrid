@@ -17,12 +17,10 @@ type RegisteredData struct {
 }
 
 type CommandData struct {
-	RequestID  string `json:"request_id"`
 	RemotePort int    `json:"remote_port,omitempty"`
 	LocalPort  int    `json:"local_port,omitempty"`
 	Protocol   string `json:"protocol,omitempty"`
 	BindAddr   string `json:"bind_addr,omitempty"`
-	Command    string `json:"command,omitempty"`
 	ServerHost string `json:"server_host,omitempty"`
 	TunnelPort int    `json:"tunnel_port,omitempty"`
 	Token      string `json:"token,omitempty"`
@@ -43,20 +41,10 @@ type TunnelRequestData struct {
 	Token string `json:"token"`
 }
 
-type ListPortsCmd struct {
-	RequestID string `json:"request_id"`
-}
-
 type PortInfo struct {
 	Protocol string `json:"protocol"`
 	Port     int    `json:"port"`
 	Process  string `json:"process,omitempty"`
-}
-
-type PortsListData struct {
-	RequestID string     `json:"request_id"`
-	Ports     []PortInfo `json:"ports"`
-	Error     string     `json:"error,omitempty"`
 }
 
 type TunnelAuthMsg struct {
@@ -89,30 +77,6 @@ type RelaySignalData struct {
 	SourceLocalIP string `json:"source_local_ip"`
 	ServerHost    string `json:"server_host"`
 	Token         string `json:"token"`
-}
-
-// RelayAuth 中继认证。
-type RelayAuth struct {
-	Type string        `json:"type"`
-	Data RelayAuthData `json:"data"`
-}
-
-// RelayAuthData 中继认证数据。
-type RelayAuthData struct {
-	SessionID string `json:"session_id"`
-	Token     string `json:"token"`
-	Role      string `json:"role"`
-}
-
-// RelayReady 中继就绪消息。
-type RelayReady struct {
-	Type string         `json:"type"`
-	Data RelayReadyData `json:"data"`
-}
-
-// RelayReadyData 中继就绪数据。
-type RelayReadyData struct {
-	Status string `json:"status"`
 }
 
 // RelayStatusData 中继状态数据。

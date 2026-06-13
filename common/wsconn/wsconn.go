@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,7 +21,7 @@ type wsConn struct {
 	readMu  sync.Mutex
 	writeMu sync.Mutex
 	closeMu sync.Once
-	closed  bool
+	closed  atomic.Bool
 }
 
 // New 创建 WebSocket 连接适配器
@@ -32,7 +33,7 @@ func New(ws *websocket.Conn) net.Conn {
 //
 // 从 WebSocket 消息中读取数据，自动处理消息边界。
 func (w *wsConn) Read(b []byte) (int, error) {
-	if w.closed {
+	if w.closed.Load() {
 		return 0, net.ErrClosed
 	}
 	w.readMu.Lock()
@@ -58,7 +59,7 @@ func (w *wsConn) Read(b []byte) (int, error) {
 }
 
 func (w *wsConn) Write(b []byte) (int, error) {
-	if w.closed {
+	if w.closed.Load() {
 		return 0, net.ErrClosed
 	}
 	w.writeMu.Lock()
@@ -73,7 +74,7 @@ func (w *wsConn) Write(b []byte) (int, error) {
 
 func (w *wsConn) Close() error {
 	w.closeMu.Do(func() {
-		w.closed = true
+		w.closed.Store(true)
 	})
 	return w.conn.Close()
 }

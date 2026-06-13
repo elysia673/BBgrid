@@ -275,18 +275,28 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		switch msg.Type {
 		case "register":
 			var payload RegisterPayload
-			json.Unmarshal(msg.Payload, &payload)
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				log.Printf("Invalid register payload: %v", err)
+				continue
+			}
 			d.handleRegister(payload)
 			encoder.Encode(Message{Type: "ok"})
 
 		case "heartbeat":
 			var payload HeartbeatPayload
-			json.Unmarshal(msg.Payload, &payload)
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				log.Printf("Invalid heartbeat payload: %v", err)
+				continue
+			}
 			d.handleHeartbeat(payload)
 
 		case "command":
 			var payload CommandPayload
-			json.Unmarshal(msg.Payload, &payload)
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				log.Printf("Invalid command payload: %v", err)
+				encoder.Encode(Message{Type: "error", Payload: mustMarshal("invalid payload")})
+				continue
+			}
 			result := d.handleCommand(payload)
 			encoder.Encode(result)
 

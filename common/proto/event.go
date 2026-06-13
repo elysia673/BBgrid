@@ -1,7 +1,6 @@
 package proto
 
 import (
-	alog "BBgrid/common/log"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -108,10 +107,7 @@ func (e GenericEvent) WithGeneration(generation int64) GenericEvent {
 func GenerateID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		alog.Error(alog.CatSystem, "crypto/rand failed, using fallback", "error", err)
-		for i := range b {
-			b[i] = byte(time.Now().UnixNano() >> (i * 8))
-		}
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
 	}
 	return hex.EncodeToString(b)
 }

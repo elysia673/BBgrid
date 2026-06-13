@@ -349,7 +349,6 @@ func bridgeChannel(localConn net.Conn, channel *mux.Channel, sessionID string) {
 // 错误定义
 var (
 	ErrUnsupportedRole = &RelayError{"unsupported relay role"}
-	ErrRelayClosed     = &RelayError{"relay closed"}
 )
 
 type RelayError struct {

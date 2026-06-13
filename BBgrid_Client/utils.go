@@ -1,7 +1,6 @@
 package main
 
 import (
-	"BBgrid/common/model"
 	"net/url"
 )
 
@@ -30,17 +29,4 @@ func originHeader(serverURL string, useHTTP bool, override string) string {
 		return "http://" + host
 	}
 	return "https://" + host
-}
-
-// DeduplicatePorts 去除重复的端口信息。
-func DeduplicatePorts(ports []model.PortInfo) []model.PortInfo {
-	seen := make(map[int]bool)
-	result := make([]model.PortInfo, 0, len(ports))
-	for _, p := range ports {
-		if !seen[p.Port] {
-			seen[p.Port] = true
-			result = append(result, p)
-		}
-	}
-	return result
 }

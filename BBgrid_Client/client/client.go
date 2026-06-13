@@ -77,13 +77,6 @@ type Config struct {
 	ReconnectDelay time.Duration `json:"reconnect_delay"`
 }
 
-// DefaultConfig 默认配置
-func DefaultConfig() Config {
-	return Config{
-		ReconnectDelay: 5 * time.Second,
-	}
-}
-
 // clientImpl 客户端实现
 type clientImpl struct {
 	mu             sync.RWMutex
@@ -486,11 +479,19 @@ func (c *clientImpl) handleCertificateMessage(data any) {
 // emit 触发事件
 func (c *clientImpl) emit(event Event, data any) {
 	c.mu.RLock()
-	handlers := c.eventHandlers[event]
+	handlers := make([]EventHandler, len(c.eventHandlers[event]))
+	copy(handlers, c.eventHandlers[event])
 	c.mu.RUnlock()
 
 	for _, handler := range handlers {
-		go handler(event, data)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[Client] Event handler %s panic: %v", event, r)
+				}
+			}()
+			handler(event, data)
+		}()
 	}
 }
 
@@ -498,12 +499,18 @@ func (c *clientImpl) emit(event Event, data any) {
 func (c *clientImpl) waitForDisconnect() <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {
+		defer close(ch)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
 		for {
-			if !c.IsConnected() {
-				close(ch)
+			select {
+			case <-c.stopCh:
 				return
+			case <-ticker.C:
+				if !c.IsConnected() {
+					return
+				}
 			}
-			time.Sleep(1 * time.Second)
 		}
 	}()
 	return ch

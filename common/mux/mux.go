@@ -270,10 +270,13 @@ func (m *Multiplexer) writeFrame(port uint16, data []byte, ctrl bool) error {
 
 	for written := 0; written < len(buf); {
 		n, err := m.conn.Write(buf[written:])
-		written += n
 		if err != nil {
 			return err
 		}
+		if n == 0 {
+			return fmt.Errorf("zero write")
+		}
+		written += n
 	}
 	return nil
 }
@@ -292,10 +295,13 @@ func (m *Multiplexer) writeCtrl(port uint16, ptype uint16) error {
 
 	for written := 0; written < len(frame); {
 		n, err := m.conn.Write(frame[written:])
-		written += n
 		if err != nil {
 			return err
 		}
+		if n == 0 {
+			return fmt.Errorf("zero write")
+		}
+		written += n
 	}
 	return nil
 }
@@ -694,10 +700,13 @@ func (m *Multiplexer) writeWindowUpdate(port uint16, data []byte) error {
 
 	for written := 0; written < len(buf); {
 		n, err := m.conn.Write(buf[written:])
-		written += n
 		if err != nil {
 			return err
 		}
+		if n == 0 {
+			return fmt.Errorf("zero write")
+		}
+		written += n
 	}
 	return nil
 }
@@ -708,12 +717,11 @@ func (m *Multiplexer) Close() {
 		m.closed.Store(true)
 		close(m.closeChan)
 		t1 := time.Now()
+		m.conn.Close()
 		if m.connFdFile != nil {
 			m.connFdFile.Close()
 		}
-		alog.Info(alog.CatMux, "mux.Close before conn.Close", "elapsedSinceCloseChan", time.Since(t1))
-		m.conn.Close()
-		alog.Info(alog.CatMux, "mux.Close done", "total", time.Since(t0))
+		alog.Info(alog.CatMux, "mux.Close done", "total", time.Since(t0), "elapsedSinceCloseChan", time.Since(t1))
 	})
 }
 

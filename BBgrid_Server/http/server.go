@@ -57,6 +57,7 @@ func (s *Server) SetupRoutes() {
 	// === 注册 (公开) ===
 	r.POST("/api/v1/register/apply", s.handleRegisterApply)
 	r.POST("/api/v1/register/voucher", s.handleRegisterVoucher)
+	r.GET("/api/v1/register/cert", s.handleGetClientCert)
 
 	// === Admin 权限端点 (JWT/API Key only) ===
 	adminGroup := r.Group("/api/v1", s.requireAdminAuth())
@@ -315,7 +316,8 @@ func (s *Server) handleCall(c *gin.Context) {
 
 	result, err := s.core.Capability().Execute(ctx)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "msg": err.Error()})
+		alog.Error(alog.CatSystem, "Action 执行失败", "action", req.Action, "error", err)
+		c.JSON(500, gin.H{"code": 500, "msg": "internal server error"})
 		return
 	}
 
@@ -446,12 +448,16 @@ func (s *Server) handleRegisterApply(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
 		return
 	}
+	if !validateClientID(req.ClientID) {
+		c.JSON(400, gin.H{"code": 400, "msg": "invalid client_id format"})
+		return
+	}
 	if !s.auth.ValidateClientToken(req.Token) {
 		c.JSON(401, gin.H{"code": 401, "msg": "invalid token"})
 		return
 	}
 	if err := s.auth.AddApplication(req.ClientID, req.PublicKey); err != nil {
-		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+		c.JSON(400, gin.H{"code": 400, "msg": "failed to add application"})
 		return
 	}
 	c.JSON(200, gin.H{"code": 0, "msg": "applied"})
@@ -476,19 +482,18 @@ func (s *Server) handleRegisterVoucher(c *gin.Context) {
 	// 校验凭证
 	voucher, err := s.auth.UseVoucher(req.Voucher)
 	if err != nil {
-		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+		c.JSON(400, gin.H{"code": 400, "msg": "invalid voucher"})
 		return
 	}
 
 	// 添加客户端（已存在则更新公钥）
 	if err := s.auth.AddApplication(req.ClientID, req.PublicKey); err != nil {
 		if err.Error() != "client already exists" {
-			c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+			c.JSON(400, gin.H{"code": 400, "msg": "failed to add application"})
 			return
 		}
-		// 已存在，更新公钥（用新密钥重新签发）
 		if err := s.auth.UpdatePublicKey(req.ClientID, req.PublicKey); err != nil {
-			c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+			c.JSON(400, gin.H{"code": 400, "msg": "failed to update public key"})
 			return
 		}
 	}
@@ -510,11 +515,13 @@ func (s *Server) handleRegisterVoucher(c *gin.Context) {
 			s.auth.ResetClientStatus(req.ClientID)
 			cert, err = s.auth.Approve(req.ClientID, namespace, role)
 			if err != nil {
-				c.JSON(500, gin.H{"code": 500, "msg": err.Error()})
+				alog.Error(alog.CatAuth, "审批客户端失败（重试）", "client_id", req.ClientID, "error", err)
+				c.JSON(500, gin.H{"code": 500, "msg": "internal server error"})
 				return
 			}
 		} else {
-			c.JSON(500, gin.H{"code": 500, "msg": err.Error()})
+			alog.Error(alog.CatAuth, "审批客户端失败", "client_id", req.ClientID, "error", err)
+			c.JSON(500, gin.H{"code": 500, "msg": "internal server error"})
 			return
 		}
 	}
@@ -529,11 +536,33 @@ func (s *Server) handleRegisterVoucher(c *gin.Context) {
 // handleRegisterList 注册列表 (已批准)
 func (s *Server) handleRegisterList(c *gin.Context) {
 	clients := s.auth.GetApproved()
+	// 不返回完整证书，只返回摘要信息
+	type ClientSummary struct {
+		ClientID   string `json:"client_id"`
+		Status     string `json:"status"`
+		Namespace  string `json:"namespace"`
+		Role       string `json:"role"`
+		CreatedAt  int64  `json:"created_at"`
+		ApprovedAt int64  `json:"approved_at,omitempty"`
+		HasCert    bool   `json:"has_cert"`
+	}
+	summaries := make([]ClientSummary, 0, len(clients))
+	for _, c := range clients {
+		summaries = append(summaries, ClientSummary{
+			ClientID:   c.ClientID,
+			Status:     c.Status,
+			Namespace:  c.Namespace,
+			Role:       c.Role,
+			CreatedAt:  c.CreatedAt,
+			ApprovedAt: c.ApprovedAt,
+			HasCert:    c.Certificate != "",
+		})
+	}
 	c.JSON(200, gin.H{
 		"code": 0,
 		"msg":  "success",
 		"data": gin.H{
-			"clients": clients,
+			"clients": summaries,
 		},
 	})
 }
@@ -615,7 +644,7 @@ func (s *Server) handleRegisterApprove(c *gin.Context) {
 	}
 	cert, err := s.auth.Approve(req.ClientID, req.Namespace, req.Role)
 	if err != nil {
-		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+		c.JSON(400, gin.H{"code": 400, "msg": "failed to approve client"})
 		return
 	}
 
@@ -663,6 +692,48 @@ func (s *Server) handleRegisterRevoke(c *gin.Context) {
 
 func (s *Server) handleRegisterPending(c *gin.Context) {
 	ok(c, gin.H{"applications": s.auth.GetPending()})
+}
+
+// handleGetClientCert 客户端获取自己的证书（公开端点，需要 client_id 和 token）
+func (s *Server) handleGetClientCert(c *gin.Context) {
+	clientID := c.Query("client_id")
+	token := c.Query("token")
+
+	if clientID == "" || token == "" {
+		c.JSON(400, gin.H{"code": 400, "msg": "client_id and token are required"})
+		return
+	}
+
+	if !s.auth.ValidateClientToken(token) {
+		c.JSON(401, gin.H{"code": 401, "msg": "invalid token"})
+		return
+	}
+
+	client := s.auth.GetByClientID(clientID)
+	if client == nil {
+		c.JSON(404, gin.H{"code": 404, "msg": "client not found"})
+		return
+	}
+
+	if client.Status != "approved" || client.Certificate == "" {
+		c.JSON(200, gin.H{
+			"code": 0,
+			"msg":  "success",
+			"data": gin.H{
+				"status": client.Status,
+			},
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"code": 0,
+		"msg":  "success",
+		"data": gin.H{
+			"status":      client.Status,
+			"certificate": client.Certificate,
+		},
+	})
 }
 
 // ==================== Proxy Handlers ====================
@@ -911,7 +982,7 @@ func (s *Server) handleAssignNamespace(c *gin.Context) {
 		return
 	}
 	if err := s.auth.SetClientNamespace(req.ClientID, req.Namespace, req.Role); err != nil {
-		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
+		c.JSON(400, gin.H{"code": 400, "msg": "failed to assign namespace"})
 		return
 	}
 	ok(c, gin.H{"status": "assigned"})
@@ -976,7 +1047,8 @@ func (s *Server) handleCreateVoucher(c *gin.Context) {
 	}
 	v, err := s.auth.CreateVoucher(req.MaxUses, expiresAt, req.Namespace, req.Role)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "msg": err.Error()})
+		alog.Error(alog.CatSystem, "创建凭证失败", "error", err)
+		c.JSON(500, gin.H{"code": 500, "msg": "internal server error"})
 		return
 	}
 	ok(c, v)
@@ -998,4 +1070,18 @@ func (s *Server) handleDeleteVoucher(c *gin.Context) {
 // ok 返回标准成功响应 {"code":0,"msg":"success","data":...}
 func ok(c *gin.Context, data any) {
 	c.JSON(200, gin.H{"code": 0, "msg": "success", "data": data})
+}
+
+// validateClientID 验证客户端 ID 格式
+// 只允许字母、数字、连字符、下划线和点
+func validateClientID(clientID string) bool {
+	if clientID == "" || len(clientID) > 255 {
+		return false
+	}
+	for _, c := range clientID {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }

@@ -91,6 +91,11 @@ func (m *Manager) initToken() error {
 	if m.config.Token == "" {
 		return fmt.Errorf("token auth requires token")
 	}
+	// Token 模式下也需要 TLS 配置（用于 wss:// 连接）
+	m.tlsConfig = &tls.Config{
+		InsecureSkipVerify: m.config.Insecure,
+		MinVersion:         tls.VersionTLS12,
+	}
 	return nil
 }
 
@@ -99,35 +104,3 @@ func (m *Manager) GetTLSConfig() *tls.Config {
 	return m.tlsConfig
 }
 
-// GetToken 获取认证 Token
-func (m *Manager) GetToken() string {
-	return m.config.Token
-}
-
-// GetMode 获取认证模式
-func (m *Manager) GetMode() AuthMode {
-	return m.config.Mode
-}
-
-// IsInsecure 是否跳过 TLS 验证
-func (m *Manager) IsInsecure() bool {
-	return m.config.Insecure
-}
-
-// CertExists 检查证书是否存在
-func (m *Manager) CertExists() bool {
-	if m.config.CertPath == "" {
-		return false
-	}
-	_, err := os.Stat(m.config.CertPath)
-	return err == nil
-}
-
-// KeyExists 检查私钥是否存在
-func (m *Manager) KeyExists() bool {
-	if m.config.PrivateKeyPath == "" {
-		return false
-	}
-	_, err := os.Stat(m.config.PrivateKeyPath)
-	return err == nil
-}

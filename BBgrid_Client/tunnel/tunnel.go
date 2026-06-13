@@ -217,8 +217,6 @@ func pipeTCP(a, b net.Conn) {
 // 错误定义
 var (
 	ErrUnsupportedTunnelType = &TunnelError{"unsupported tunnel type"}
-	ErrTunnelClosed          = &TunnelError{"tunnel closed"}
-	ErrTunnelNotConnected    = &TunnelError{"tunnel not connected"}
 )
 
 type TunnelError struct {

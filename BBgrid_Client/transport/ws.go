@@ -120,10 +120,10 @@ func (t *WSTransport) Connect(ctx context.Context) error {
 			}
 		}
 
-		// 设置 SNI：优先使用覆盖值，否则从 URL 提取
+		// 设置 SNI：优先使用覆盖值，否则从 URL 提取（不含端口）
 		sni := t.sniOverride
 		if sni == "" {
-			sni = extractHost(t.url)
+			sni = extractHostname(t.url)
 		}
 		if sni != "" {
 			tlsConfig.ServerName = sni
@@ -287,8 +287,17 @@ func (t *WSTransport) StartMessageLoop(ctx context.Context) {
 	}()
 }
 
-// extractHost 从 URL 中提取主机名
+// extractHost 从 URL 中提取主机名（带端口）
 func extractHost(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// extractHostname 从 URL 中提取主机名（不含端口，用于 TLS SNI）
+func extractHostname(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ""

@@ -12,6 +12,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -343,14 +344,14 @@ func (m *Manager) ValidateToken(tokenString string) (*JWTClaims, error) {
 
 // ==================== Auth ====================
 
-// ValidateAPIKey 验证 API Key
+// ValidateAPIKey 验证 API Key（常量时间比较，防止时序攻击）
 func (m *Manager) ValidateAPIKey(apiKey string) bool {
-	return apiKey == m.config.APIKey
+	return subtle.ConstantTimeCompare([]byte(apiKey), []byte(m.config.APIKey)) == 1
 }
 
-// ValidateClientToken 验证客户端 Token
+// ValidateClientToken 验证客户端 Token（常量时间比较，防止时序攻击）
 func (m *Manager) ValidateClientToken(token string) bool {
-	return token == m.config.ClientToken
+	return subtle.ConstantTimeCompare([]byte(token), []byte(m.config.ClientToken)) == 1
 }
 
 // ==================== Registry ====================
@@ -494,7 +495,9 @@ func (m *Manager) DeleteVoucher(code string) bool {
 // generateRandomHex 生成随机 hex 字符串
 func generateRandomHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
 	return hex.EncodeToString(b)
 }
 

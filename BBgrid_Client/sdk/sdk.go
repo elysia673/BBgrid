@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"time"
 )
@@ -47,19 +46,13 @@ type Config struct {
 	PrivateKeyPath string        `json:"private_key_path"`
 	PublicKeyPath  string        `json:"public_key_path"`
 	CertPath       string        `json:"cert_path"`
+	CACertPath     string        `json:"ca_cert_path"`
 	DataDir        string        `json:"data_dir"`
 	UseHTTP        bool          `json:"use_http"`
 	Insecure       bool          `json:"insecure"`
 	TLSSNI         string        `json:"tls_sni"`
 	Origin         string        `json:"origin"`
 	ReconnectDelay time.Duration `json:"reconnect_delay"`
-}
-
-// DefaultConfig 默认配置
-func DefaultConfig() Config {
-	return Config{
-		ReconnectDelay: 5 * time.Second,
-	}
 }
 
 // New 创建 SDK
@@ -85,6 +78,7 @@ func (s *SDK) Start(ctx context.Context) error {
 		PrivateKeyPath: s.config.PrivateKeyPath,
 		PublicKeyPath:  s.config.PublicKeyPath,
 		CertPath:       s.config.CertPath,
+		CACertPath:     s.config.CACertPath,
 		DataDir:        s.config.DataDir,
 		UseHTTP:        s.config.UseHTTP,
 		Insecure:       s.config.Insecure,
@@ -315,8 +309,12 @@ func (s *SDK) connectAndPipe(ctx context.Context, serverHost string, tunnelPort 
 	// 等待确认
 	ack := make([]byte, 1)
 	tunnelConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if _, err := io.ReadFull(tunnelConn, ack); err != nil || ack[0] != 0x01 {
+	if _, err := io.ReadFull(tunnelConn, ack); err != nil {
 		fmt.Printf("[SDK] Tunnel ack failed: %v\n", err)
+		return
+	}
+	if ack[0] != 0x01 {
+		fmt.Printf("[SDK] Tunnel ack failed: unexpected ack byte 0x%02x\n", ack[0])
 		return
 	}
 	tunnelConn.SetReadDeadline(time.Time{})
@@ -643,18 +641,6 @@ func unmarshalData[T any](data any) (*T, error) {
 	}
 }
 
-// getTunnelType 获取隧道类型
-func getTunnelType(protocol string) tunnel.TunnelType {
-	switch protocol {
-	case "udp":
-		return tunnel.TunnelTypeUDP
-	case "websocket":
-		return tunnel.TunnelTypeWS
-	default:
-		return tunnel.TunnelTypeTCP
-	}
-}
-
 // SDK 更新相关字段
 var (
 	updateMu      sync.Mutex
@@ -742,21 +728,5 @@ func (s *SDK) handleUpdateEnd() {
 	}
 
 	fmt.Printf("[SDK] Update data received: md5=%s size=%d\n", actualMD5, len(data))
-
-	// 获取当前可执行文件路径
-	execPath, err := os.Executable()
-	if err != nil {
-		fmt.Printf("[SDK] Update failed: get executable path: %v\n", err)
-		return
-	}
-
-	// 写入临时文件
-	tmpPath := execPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0755); err != nil {
-		fmt.Printf("[SDK] Update failed: write temp file: %v\n", err)
-		return
-	}
-
-	fmt.Println("[SDK] Update successful, restarting...")
-	os.Exit(0)
+	fmt.Println("[SDK] Auto-update is disabled for security reasons. Please update manually.")
 }
