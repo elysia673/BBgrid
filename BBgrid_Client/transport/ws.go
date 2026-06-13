@@ -16,6 +16,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// WSOpt WebSocket 传输层选项
+type WSOpt func(*WSTransport)
+
 // WSTransport WebSocket 传输层实现
 type WSTransport struct {
 	mu          sync.RWMutex
@@ -31,10 +34,8 @@ type WSTransport struct {
 	connected   bool
 	stopCh      chan struct{}
 	onMessage   func(msg *model.WSMessage)
+	tlsConfig   *tls.Config
 }
-
-// WSOpt WebSocket 传输层选项
-type WSOpt func(*WSTransport)
 
 // WithHTTP 使用 HTTP 协议
 func WithHTTP(useHTTP bool) WSOpt {
@@ -78,6 +79,13 @@ func WithOnMessage(handler func(msg *model.WSMessage)) WSOpt {
 	}
 }
 
+// WithTLSConfig 设置 TLS 配置
+func WithTLSConfig(tlsConfig *tls.Config) WSOpt {
+	return func(t *WSTransport) {
+		t.tlsConfig = tlsConfig
+	}
+}
+
 // NewWSTransport 创建 WebSocket 传输层
 func NewWSTransport(url string, opts ...WSOpt) *WSTransport {
 	t := &WSTransport{
@@ -103,10 +111,15 @@ func (t *WSTransport) Connect(ctx context.Context) error {
 	}
 
 	if !t.useHTTP {
-		tlsConfig := &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: t.insecure,
+		// 使用外部 TLS 配置（如果有的话），否则创建默认配置
+		tlsConfig := t.tlsConfig
+		if tlsConfig == nil {
+			tlsConfig = &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: t.insecure,
+			}
 		}
+
 		// 设置 SNI：优先使用覆盖值，否则从 URL 提取
 		sni := t.sniOverride
 		if sni == "" {

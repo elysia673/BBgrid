@@ -1,0 +1,16 @@
+{
+  "socket_path": "/var/run/bbgrid/daemon.sock",
+  "log_path": "/var/log/bbgrid/daemon.log",
+  "ctl_path": "/usr/local/bbgrid/bin/bbgrid-ctl",
+  "update_url": "https://elysia.media/bbgrid",
+  "server": {
+    "enabled": true,
+    "bin_path": "/usr/local/bbgrid/bin/bbgrid-server",
+    "config_path": "/usr/local/bbgrid/config/server.json"
+  },
+  "client": {
+    "enabled": true,
+    "bin_path": "/usr/local/bbgrid/bin/bbgrid-client",
+    "config_path": "/usr/local/bbgrid/config/client.json"
+  }
+}

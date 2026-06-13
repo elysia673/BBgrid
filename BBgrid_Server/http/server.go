@@ -5,6 +5,7 @@ import (
 	"BBgrid/BBgrid_Server/runtime"
 	"BBgrid/BBgrid_Server/session"
 	alog "BBgrid/common/log"
+	"BBgrid/common/model"
 	"BBgrid/common/proto"
 	"crypto/tls"
 	"fmt"
@@ -56,46 +57,53 @@ func (s *Server) SetupRoutes() {
 	// === 注册 (公开) ===
 	r.POST("/api/v1/register/apply", s.handleRegisterApply)
 	r.POST("/api/v1/register/voucher", s.handleRegisterVoucher)
-	r.GET("/api/v1/register/list", s.handleRegisterList)
 
-	// === JWT 保护的端点 ===
-	authGroup := r.Group("/api/v1", s.requireJWT())
+	// === Admin 权限端点 (JWT/API Key only) ===
+	adminGroup := r.Group("/api/v1", s.requireAdminAuth())
 	{
 		// 节点管理
-		authGroup.GET("/nodes", s.handleListNodes)
-		authGroup.GET("/nodes/:id", s.handleGetNode)
-		authGroup.POST("/register/approve", s.handleRegisterApprove)
-		authGroup.POST("/register/revoke", s.handleRegisterRevoke)
-		authGroup.GET("/register/pending", s.handleRegisterPending)
+		adminGroup.GET("/nodes", s.handleListNodes)
+		adminGroup.GET("/nodes/:id", s.handleGetNode)
+		adminGroup.POST("/register/approve", s.handleRegisterApprove)
+		adminGroup.POST("/register/revoke", s.handleRegisterRevoke)
+		adminGroup.GET("/register/pending", s.handleRegisterPending)
+		adminGroup.GET("/register/list", s.handleRegisterList)
 
 		// 凭证管理
-		authGroup.POST("/vouchers", s.handleCreateVoucher)
-		authGroup.GET("/vouchers", s.handleListVouchers)
-		authGroup.DELETE("/vouchers/:code", s.handleDeleteVoucher)
+		adminGroup.POST("/vouchers", s.handleCreateVoucher)
+		adminGroup.GET("/vouchers", s.handleListVouchers)
+		adminGroup.DELETE("/vouchers/:code", s.handleDeleteVoucher)
 
 		// 代理管理
-		authGroup.GET("/proxies", s.handleListProxies)
-		authGroup.POST("/proxies", s.handleCreateProxy)
-		authGroup.DELETE("/proxies/:port", s.handleDeleteProxy)
+		adminGroup.GET("/proxies", s.handleListProxies)
+		adminGroup.POST("/proxies", s.handleCreateProxy)
+		adminGroup.DELETE("/proxies/:port", s.handleDeleteProxy)
 
 		// 中继管理
-		authGroup.GET("/relay", s.handleListRelays)
-		authGroup.POST("/relay", s.handleCreateRelay)
-		authGroup.DELETE("/relay/:id", s.handleDeleteRelay)
+		adminGroup.GET("/relay", s.handleListRelays)
+		adminGroup.POST("/relay", s.handleCreateRelay)
+		adminGroup.DELETE("/relay/:id", s.handleDeleteRelay)
 
 		// 命名空间
-		authGroup.GET("/namespaces", s.handleListNamespaces)
-		authGroup.GET("/namespaces/:name", s.handleGetNamespace)
-		authGroup.GET("/namespaces/:name/clients", s.handleGetNamespaceClients)
-		authGroup.POST("/namespaces/assign", s.handleAssignNamespace)
+		adminGroup.GET("/namespaces", s.handleListNamespaces)
+		adminGroup.GET("/namespaces/:name", s.handleGetNamespace)
+		adminGroup.GET("/namespaces/:name/clients", s.handleGetNamespaceClients)
+		adminGroup.POST("/namespaces/assign", s.handleAssignNamespace)
 
 		// 任务管理
-		authGroup.GET("/tasks/:id", s.handleGetTask)
+		adminGroup.GET("/tasks/:id", s.handleGetTask)
 
-		// Runtime 端点 (需要认证)
-		authGroup.GET("/runtime/capabilities", s.handleCapabilities)
-		authGroup.POST("/runtime/call", s.handleCall)
-		authGroup.GET("/runtime/query", s.handleQuery)
+		// Runtime 端点
+		adminGroup.GET("/runtime/capabilities", s.handleCapabilities)
+		adminGroup.POST("/runtime/call", s.handleCall)
+		adminGroup.GET("/runtime/query", s.handleQuery)
+	}
+
+	// === Client 权限端点 (允许 Client Token) ===
+	clientGroup := r.Group("/api/v1", s.requireClientAuth())
+	{
+		// 客户端只能查看自己的状态
+		clientGroup.GET("/status", s.handleStatus)
 	}
 
 	// === WebSocket 端点 ===
@@ -127,12 +135,11 @@ func (s *Server) RunTLS(addr, certFile, keyFile string, tlsConfig *tls.Config) e
 
 // ==================== Middleware ====================
 
-// requireJWT JWT 认证中间件
-func (s *Server) requireJWT() gin.HandlerFunc {
+// requireAdminAuth Admin 认证中间件 (只允许 JWT/API Key)
+func (s *Server) requireAdminAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		apiKey := c.GetHeader("X-API-KEY")
-		clientToken := c.GetHeader("X-CLIENT-TOKEN")
 
 		if authHeader != "" {
 			if !strings.HasPrefix(authHeader, "Bearer ") {
@@ -150,6 +157,7 @@ func (s *Server) requireJWT() gin.HandlerFunc {
 			}
 
 			c.Set("api_key", claims.APIKey)
+			c.Set("auth_type", "jwt")
 			c.Next()
 			return
 		}
@@ -162,16 +170,54 @@ func (s *Server) requireJWT() gin.HandlerFunc {
 			}
 
 			c.Set("api_key", apiKey)
+			c.Set("auth_type", "api_key")
 			c.Next()
 			return
 		}
 
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": "admin auth required (JWT or API Key)"})
+		c.Abort()
+	}
+}
+
+// requireClientAuth Client 认证中间件 (允许 Client Token)
+func (s *Server) requireClientAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		apiKey := c.GetHeader("X-API-KEY")
+		clientToken := c.GetHeader("X-CLIENT-TOKEN")
+
+		// 优先检查 JWT/API Key
+		if authHeader != "" {
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+				claims, err := s.auth.ValidateToken(tokenStr)
+				if err == nil {
+					c.Set("api_key", claims.APIKey)
+					c.Set("auth_type", "jwt")
+					c.Next()
+					return
+				}
+			}
+		}
+
+		if apiKey != "" {
+			if s.auth.ValidateAPIKey(apiKey) {
+				c.Set("api_key", apiKey)
+				c.Set("auth_type", "api_key")
+				c.Next()
+				return
+			}
+		}
+
+		// 检查 Client Token
 		if clientToken != "" {
 			if !s.auth.ValidateClientToken(clientToken) {
 				c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": "invalid client token"})
 				c.Abort()
 				return
 			}
+			c.Set("auth_type", "client_token")
 			c.Next()
 			return
 		}
@@ -572,7 +618,26 @@ func (s *Server) handleRegisterApprove(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 400, "msg": err.Error()})
 		return
 	}
-	ok(c, gin.H{"certificate": string(cert)})
+
+	// 获取 CA 证书
+	caCert := s.auth.GetCACert()
+
+	// 通过 WebSocket 推送证书给客户端
+	msg := model.WSMessage{
+		Type: "certificate",
+		Data: map[string]any{
+			"client_id":   req.ClientID,
+			"certificate": string(cert),
+			"ca_cert":     string(caCert),
+		},
+	}
+	if err := s.session.SendToClient(req.ClientID, msg); err != nil {
+		alog.Warn(alog.CatWS, "推送证书失败", "client_id", req.ClientID, "error", err)
+	} else {
+		alog.Info(alog.CatWS, "证书已推送给客户端", "client_id", req.ClientID)
+	}
+
+	ok(c, gin.H{"certificate": string(cert), "ca_cert": string(caCert)})
 }
 
 func (s *Server) handleRegisterRevoke(c *gin.Context) {
@@ -587,6 +652,12 @@ func (s *Server) handleRegisterRevoke(c *gin.Context) {
 		c.JSON(404, gin.H{"code": 404, "msg": "client not found"})
 		return
 	}
+
+	// 断开已连接的客户端
+	if s.session.DisconnectClient(req.ClientID) {
+		alog.Info(alog.CatSystem, "已断开被吊销的客户端连接", "client_id", req.ClientID)
+	}
+
 	ok(c, gin.H{"status": "revoked"})
 }
 

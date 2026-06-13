@@ -25,15 +25,18 @@ import (
 
 // Session 客户端会话
 type Session struct {
-	mu           sync.RWMutex // 保护下面的可变字段
+	mu           sync.RWMutex
 	clientID     string
 	conn         *websocket.Conn
+	request      *http.Request
+	server       *Server // 反向引用，用于操作 sessions
 	send         chan []byte
 	done         chan struct{}
 	closeOnce    sync.Once
 	registered   chan struct{}
 	registerOnce sync.Once
 	isTemp       bool
+	hasCert      bool
 	remoteAddr   string
 	host         string
 	connectedAt  time.Time
@@ -44,10 +47,12 @@ type Session struct {
 }
 
 // NewSession 创建会话
-func NewSession(conn *websocket.Conn, clientID string, isTemp bool, core *runtime.Core, authManager *auth.Manager) *Session {
+func NewSession(conn *websocket.Conn, request *http.Request, clientID string, isTemp bool, core *runtime.Core, authManager *auth.Manager, server *Server) *Session {
 	return &Session{
 		clientID:    clientID,
 		conn:        conn,
+		request:     request,
+		server:      server,
 		send:        make(chan []byte, 256),
 		done:        make(chan struct{}),
 		registered:  make(chan struct{}),
@@ -64,6 +69,20 @@ func (s *Session) ClientID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.clientID
+}
+
+// SetHasCert 设置是否使用证书认证
+func (s *Session) SetHasCert(hasCert bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hasCert = hasCert
+}
+
+// HasCert 是否使用证书认证
+func (s *Session) HasCert() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hasCert
 }
 
 // Start 启动会话 (readPump + writePump)
@@ -137,6 +156,21 @@ func (s *Session) writePump() {
 
 // handleMessage 处理 WS 消息
 func (s *Session) handleMessage(msg model.WSMessage) {
+	// 检查是否使用证书认证
+	if !s.HasCert() {
+		// 没有证书，只能注册
+		switch msg.Type {
+		case "register":
+			s.handleRegister(msg.Data)
+		case "pong":
+			s.handlePong(msg.Data)
+		default:
+			s.sendError(403, "certificate required for this operation")
+		}
+		return
+	}
+
+	// 有证书，可以使用所有功能
 	switch msg.Type {
 	case "register":
 		s.handleRegister(msg.Data)
@@ -177,6 +211,80 @@ func (s *Session) handleRegister(data interface{}) {
 		return
 	}
 
+	// 检查是否使用证书认证
+	if !s.HasCert() {
+		alog.Info(alog.CatWS, "客户端提交注册申请（token 认证）", "client_id", clientID, "remote_addr", s.remoteAddr)
+
+		publicKey, _ := regData["public_key"].(string)
+
+		// 尝试存储注册申请
+		if err := s.auth.AddApplication(clientID, publicKey); err != nil {
+			// 客户端已存在
+			if cert, ok := s.auth.GetClientCertificate(clientID); ok && cert != "" {
+				if s.auth.ClientKeyChanged(clientID, publicKey) {
+					// 密钥已变更，需要重新审核
+					alog.Info(alog.CatWS, "客户端密钥已变更，重新注册", "client_id", clientID)
+					s.auth.UpdatePublicKey(clientID, publicKey)
+
+					// 断开旧连接，防止旧客户端重连不断重置状态
+					if oldVal, ok := s.server.sessions.Load(clientID); ok {
+						oldSession := oldVal.(*Session)
+						alog.Info(alog.CatWS, "断开旧连接（密钥变更）", "client_id", clientID)
+						oldSession.Close()
+					}
+				} else {
+					// 密钥未变，已批准，直接推送证书
+					alog.Info(alog.CatWS, "客户端已批准，推送证书", "client_id", clientID)
+					s.mu.Lock()
+					s.clientID = clientID
+					s.mu.Unlock()
+					s.server.sessions.Store(clientID, s)
+					s.core.StateStore().SetClientConn(clientID, s)
+					pushCert(s, clientID, cert)
+					return
+				}
+			}
+		}
+
+		s.mu.Lock()
+		s.clientID = clientID
+		s.mu.Unlock()
+		s.server.sessions.Store(clientID, s)
+
+		resp := model.WSMessage{
+			Type: "register_pending",
+			Data: map[string]any{
+				"client_id": clientID,
+				"message":   "Registration submitted, waiting for approval",
+			},
+		}
+		s.WriteJSON(resp)
+		return
+	}
+
+	// 有证书，验证证书中的 clientID 是否与注册的 clientID 匹配
+	certClientID := extractClientID(s.request)
+	if certClientID == "" {
+		s.sendError(403, "invalid certificate: no client ID")
+		return
+	}
+	if certClientID != clientID {
+		s.sendError(403, "certificate client ID mismatch")
+		return
+	}
+
+	// 检查客户端是否存在于注册表且状态为 approved
+	client := s.auth.GetByClientID(clientID)
+	if client == nil {
+		s.sendError(403, "client not registered")
+		return
+	}
+	if client.Status != "approved" {
+		s.sendError(403, "client not approved")
+		return
+	}
+
+	// 注册成功
 	s.mu.Lock()
 	s.clientID = clientID
 	s.host, _ = regData["host"].(string)
@@ -207,7 +315,7 @@ func (s *Session) handleRegister(data interface{}) {
 	s.WriteJSON(resp)
 	s.registerOnce.Do(func() { close(s.registered) })
 
-	alog.Info(alog.CatWS, "客户端注册成功", "client_id", s.clientID)
+	alog.Info(alog.CatWS, "客户端注册成功（证书认证）", "client_id", s.clientID)
 }
 
 // handleTempRegister 处理临时注册消息
@@ -313,6 +421,21 @@ func (s *Session) sendError(code int, message string) {
 			Message: message,
 		},
 	})
+}
+
+// pushCert 推送证书给客户端（用于已批准的客户端重连）
+func pushCert(s *Session, clientID, certPEM string) {
+	caCert := s.auth.GetCACert()
+	msg := model.WSMessage{
+		Type: "certificate",
+		Data: map[string]any{
+			"client_id":   clientID,
+			"certificate": certPEM,
+			"ca_cert":     string(caCert),
+		},
+	}
+	s.WriteJSON(msg)
+	alog.Info(alog.CatWS, "已重新推送证书给客户端", "client_id", clientID)
 }
 
 // Close 关闭会话
@@ -469,9 +592,6 @@ func (s *Server) Stop() {
 func (s *Server) Handle(rw http.ResponseWriter, r *http.Request) {
 	// 从 mTLS 证书提取 clientID
 	clientID := extractClientID(r)
-	if clientID == "" {
-		alog.Warn(alog.CatWS, "WS 缺少客户端证书，降级为 register token 认证", "remote_addr", r.RemoteAddr)
-	}
 
 	conn, err := s.upgrader.Upgrade(rw, r, nil)
 	if err != nil {
@@ -479,8 +599,15 @@ func (s *Server) Handle(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := NewSession(conn, clientID, false, s.core, s.auth)
+	// 标记是否使用证书认证
+	hasCert := clientID != ""
+	session := NewSession(conn, r, clientID, false, s.core, s.auth, s)
+	session.SetHasCert(hasCert)
 	session.Start()
+
+	if !hasCert {
+		alog.Info(alog.CatWS, "客户端使用 token 认证（仅限注册）", "remote_addr", r.RemoteAddr)
+	}
 
 	s.trackSession(session, clientID)
 }
@@ -493,7 +620,7 @@ func (s *Server) HandleTemp(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := NewSession(conn, "", true, s.core, s.auth)
+	session := NewSession(conn, r, "", true, s.core, s.auth, s)
 	session.Start()
 
 	s.trackSession(session, "")
@@ -502,25 +629,38 @@ func (s *Server) HandleTemp(rw http.ResponseWriter, r *http.Request) {
 func (s *Server) trackSession(session *Session, initialClientID string) {
 	select {
 	case <-session.Registered():
+		// 证书认证，直接注册成功，执行同步
+		clientID := session.ClientID()
+		if clientID != "" {
+			s.sessions.Store(clientID, session)
+			defer s.sessions.Delete(clientID)
+			s.syncClientProxies(clientID)
+			s.syncClientRelays(clientID)
+			s.deliverPendingRelaySignals(clientID)
+		}
 	case <-session.Done():
 		return
 	case <-time.After(30 * time.Second):
+		// token 认证，只等超时或断连，不做同步
+		// session 已在 handleRegister 中存入 s.sessions
 		if session.ClientID() == "" {
 			session.Close()
 			return
 		}
 	}
 
-	clientID := session.ClientID()
-	if clientID != "" {
-		s.sessions.Store(clientID, session)
-		defer s.sessions.Delete(clientID)
-		s.syncClientProxies(clientID)
-		s.syncClientRelays(clientID)
-		s.deliverPendingRelaySignals(clientID)
-	}
-
 	<-session.Done()
+
+	// 清理 token 认证的 session
+	if !session.HasCert() {
+		clientID := session.ClientID()
+		if clientID != "" {
+			// 只删除自己，避免误删新 session（密钥变更场景）
+			if actual, ok := s.sessions.Load(clientID); ok && actual == session {
+				s.sessions.Delete(clientID)
+			}
+		}
+	}
 }
 
 // syncClientRelays 客户端重连时，从 StateStore 查 relay session 并补发信号
@@ -617,6 +757,18 @@ func (s *Server) SendToClient(clientID string, msg interface{}) error {
 	}
 	session := val.(*Session)
 	return session.WriteJSON(msg)
+}
+
+// DisconnectClient 断开指定客户端的连接
+func (s *Server) DisconnectClient(clientID string) bool {
+	val, ok := s.sessions.Load(clientID)
+	if !ok {
+		return false
+	}
+	session := val.(*Session)
+	session.Close()
+	s.sessions.Delete(clientID)
+	return true
 }
 
 // ==================== Event Handlers (Realtime Push) ====================
@@ -891,9 +1043,19 @@ func parseProxyResourceKey(key string) (string, int, bool) {
 
 // extractClientID 从 mTLS 证书提取 clientID
 func extractClientID(r *http.Request) string {
-	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-		return r.TLS.PeerCertificates[0].Subject.CommonName
+	if r.TLS == nil {
+		alog.Debug(alog.CatWS, "TLS is nil - no TLS connection")
+		return ""
 	}
+	if len(r.TLS.VerifiedChains) > 0 {
+		cn := r.TLS.VerifiedChains[0][0].Subject.CommonName
+		alog.Debug(alog.CatWS, "Verified cert found", "cn", cn)
+		return cn
+	}
+	alog.Info(alog.CatWS, "No verified cert",
+		"peer_certs", len(r.TLS.PeerCertificates),
+		"verified_chains", len(r.TLS.VerifiedChains),
+	)
 	return ""
 }
 

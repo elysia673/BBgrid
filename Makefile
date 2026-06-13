@@ -22,7 +22,7 @@ all: build-all
 
 # ==================== 当前平台编译 ====================
 
-build: server client cli runtime
+build: server client cli ctl daemon runtime
 
 server:
 	@echo "编译 BBgrid Server..."
@@ -38,6 +38,16 @@ cli:
 	@echo "编译 BBgrid CLI..."
 	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/bbgrid-cli ./BBgrid_Cmd/bbgrid-cli/
 	@echo "编译完成: $(BIN_DIR)/bbgrid-cli"
+
+ctl:
+	@echo "编译 BBgrid CTL..."
+	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/bbgrid-ctl ./BBgrid_Ctl/
+	@echo "编译完成: $(BIN_DIR)/bbgrid-ctl"
+
+daemon:
+	@echo "编译 BBgrid Daemon..."
+	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/bbgrid-daemon ./BBgrid_Daemon/
+	@echo "编译完成: $(BIN_DIR)/bbgrid-daemon"
 
 runtime:
 	@echo "编译 BBgrid Runtime..."
@@ -56,6 +66,8 @@ $(PLATFORMS):
 	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(LDFLAGS) -o $(BIN_DIR)/$(GOOS)-$(GOARCH)/bbgrid-server ./BBgrid_Server/
 	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(LDFLAGS) -o $(BIN_DIR)/$(GOOS)-$(GOARCH)/bbgrid-client ./BBgrid_Client/
 	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(LDFLAGS) -o $(BIN_DIR)/$(GOOS)-$(GOARCH)/bbgrid-cli ./BBgrid_Cmd/bbgrid-cli/
+	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(LDFLAGS) -o $(BIN_DIR)/$(GOOS)-$(GOARCH)/bbgrid-ctl ./BBgrid_Ctl/
+	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(LDFLAGS) -o $(BIN_DIR)/$(GOOS)-$(GOARCH)/bbgrid-daemon ./BBgrid_Daemon/
 	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build $(LDFLAGS) -o $(BIN_DIR)/$(GOOS)-$(GOARCH)/bbgrid-runtime ./BBgrid_Runtime/
 	@echo "编译完成: $(BIN_DIR)/$(GOOS)-$(GOARCH)/"
 

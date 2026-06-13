@@ -7,10 +7,10 @@ import (
 	"BBgrid/BBgrid_Server/plugin"
 	"BBgrid/BBgrid_Server/runtime"
 	"BBgrid/BBgrid_Server/session"
+	"BBgrid/common/daemon"
 	alog "BBgrid/common/log"
+	"BBgrid/common/pidfile"
 	"BBgrid/common/store"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -74,6 +74,23 @@ func main() {
 		"addr", cfg.Addr,
 		"tunnel_port", cfg.TunnelPort,
 	)
+
+	// 写入 PID 文件
+	if err := pidfile.Write("server"); err != nil {
+		alog.Warn(alog.CatSystem, "写入 PID 文件失败", "error", err)
+	} else {
+		defer pidfile.Remove("server")
+	}
+
+	// 注册到 daemon
+	daemonClient := daemon.New("server", Version, "")
+	if err := daemonClient.Register(); err != nil {
+		alog.Warn(alog.CatSystem, "注册到 daemon 失败", "error", err)
+	} else {
+		daemonClient.StartHeartbeat()
+		defer daemonClient.Close()
+		alog.Info(alog.CatSystem, "已注册到 daemon")
+	}
 
 	// 初始化存储
 	storage, err := store.NewStorageManager(store.StorageConfig{
@@ -169,18 +186,7 @@ func main() {
 	go func() {
 		var err error
 		if cfg.TLSCert != "" && cfg.TLSKey != "" {
-			tlsConfig := &tls.Config{
-				ClientAuth: tls.RequestClientCert,
-			}
-
-			caCertPath := cfg.DataDir + "/ca.crt"
-			if caCert, err := os.ReadFile(caCertPath); err == nil {
-				caCertPool := x509.NewCertPool()
-				if caCertPool.AppendCertsFromPEM(caCert) {
-					tlsConfig.ClientCAs = caCertPool
-					alog.Info(alog.CatSystem, "已加载 CA 证书", "path", caCertPath)
-				}
-			}
+			tlsConfig := authManager.TLSConfig()
 
 			err = httpServer.RunTLS(cfg.Addr, cfg.TLSCert, cfg.TLSKey, tlsConfig)
 		} else {

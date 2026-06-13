@@ -20,8 +20,8 @@ const (
 type Config struct {
 	Mode           AuthMode `json:"mode"`
 	PrivateKeyPath string   `json:"private_key_path"`
-	PublicKeyPath  string   `json:"public_key_path"`
 	CertPath       string   `json:"cert_path"`
+	CACertPath     string   `json:"ca_cert_path"`
 	Token          string   `json:"token"`
 	Insecure       bool     `json:"insecure"`
 }
@@ -57,6 +57,7 @@ func (m *Manager) initMTLS() error {
 		return fmt.Errorf("mTLS requires cert_path and private_key_path")
 	}
 
+	// 加载客户端证书和私钥
 	cert, err := tls.LoadX509KeyPair(m.config.CertPath, m.config.PrivateKeyPath)
 	if err != nil {
 		return fmt.Errorf("load key pair: %w", err)
@@ -68,13 +69,17 @@ func (m *Manager) initMTLS() error {
 		MinVersion:         tls.VersionTLS12,
 	}
 
-	// 加载 CA 证书（如果存在）
-	caCertPath := m.config.CertPath
-	if data, err := os.ReadFile(caCertPath); err == nil {
-		pool := x509.NewCertPool()
-		if pool.AppendCertsFromPEM(data) {
-			tlsConfig.RootCAs = pool
+	// 加载 CA 证书（用于验证服务器证书）
+	if m.config.CACertPath != "" {
+		caCert, err := os.ReadFile(m.config.CACertPath)
+		if err != nil {
+			return fmt.Errorf("load CA cert: %w", err)
 		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			return fmt.Errorf("failed to parse CA cert")
+		}
+		tlsConfig.RootCAs = pool
 	}
 
 	m.tlsConfig = tlsConfig
@@ -125,11 +130,4 @@ func (m *Manager) KeyExists() bool {
 	}
 	_, err := os.Stat(m.config.PrivateKeyPath)
 	return err == nil
-}
-
-// GenerateKeyPair 生成密钥对
-func (m *Manager) GenerateKeyPair() error {
-	// 使用 register 包生成密钥对
-	// 这里需要调用 register.GenerateKeyPair
-	return nil
 }

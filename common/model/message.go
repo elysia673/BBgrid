@@ -6,8 +6,9 @@ type WSMessage struct {
 }
 
 type RegisterData struct {
-	ClientID string `json:"client_id"`
-	Token    string `json:"token"`
+	ClientID  string `json:"client_id"`
+	Token     string `json:"token"`
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type RegisteredData struct {

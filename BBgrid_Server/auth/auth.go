@@ -227,6 +227,35 @@ func (m *Manager) GetCA() *x509.Certificate {
 	return m.caCert
 }
 
+// GetCACert 获取 CA 证书 PEM 格式
+func (m *Manager) GetCACert() []byte {
+	m.caMu.RLock()
+	defer m.caMu.RUnlock()
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: m.caCert.Raw})
+}
+
+// GetClientCertificate 获取客户端证书（已签发的证书，不论当前状态）
+func (m *Manager) GetClientCertificate(clientID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	client, exists := m.clients[clientID]
+	if !exists || client.Certificate == "" {
+		return "", false
+	}
+	return client.Certificate, true
+}
+
+// ClientKeyChanged 检查客户端公钥是否与存储的不同
+func (m *Manager) ClientKeyChanged(clientID, publicKey string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	client, exists := m.clients[clientID]
+	if !exists {
+		return true
+	}
+	return client.PublicKey != publicKey
+}
+
 // SignClientCertificate 签名客户端证书
 func (m *Manager) SignClientCertificate(clientPublicKeyPEM []byte, clientID string, validityDays int) ([]byte, error) {
 	m.caMu.Lock()
@@ -705,7 +734,7 @@ func (m *Manager) TLSConfig() *tls.Config {
 
 	return &tls.Config{
 		ClientCAs:  pool,
-		ClientAuth: tls.RequestClientCert,
+		ClientAuth: tls.VerifyClientCertIfGiven,
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"BBgrid/BBgrid_Client/transport"
 	"BBgrid/common/model"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 )
@@ -64,6 +66,7 @@ type Config struct {
 	PrivateKeyPath string        `json:"private_key_path"`
 	PublicKeyPath  string        `json:"public_key_path"`
 	CertPath       string        `json:"cert_path"`
+	CACertPath     string        `json:"ca_cert_path"`
 	DataDir        string        `json:"data_dir"`
 	LogPath        string        `json:"log_path"`
 	UseHTTP        bool          `json:"use_http"`
@@ -89,6 +92,7 @@ type clientImpl struct {
 	transport      transport.Transport
 	auth           *auth.Manager
 	stopCh         chan struct{}
+	certCh         chan string // 证书接收通道
 	eventHandlers  map[Event][]EventHandler
 	msgHandlers    []MessageHandler
 	msgHandlersMu  sync.RWMutex
@@ -100,6 +104,7 @@ func New(config Config) Client {
 		config:        config,
 		state:         StateIdle,
 		stopCh:        make(chan struct{}),
+		certCh:        make(chan string, 1),
 		eventHandlers: make(map[Event][]EventHandler),
 		msgHandlers:   make([]MessageHandler, 0),
 	}
@@ -107,7 +112,6 @@ func New(config Config) Client {
 
 // Connect 连接到服务器
 func (c *clientImpl) Connect(ctx context.Context) error {
-	// 检查状态 - 只有 Idle 状态才需要连接
 	c.mu.RLock()
 	currentState := c.state
 	c.mu.RUnlock()
@@ -116,19 +120,17 @@ func (c *clientImpl) Connect(ctx context.Context) error {
 		return nil
 	}
 
-	// 设置状态
 	c.mu.Lock()
 	c.state = StateConnecting
 	c.mu.Unlock()
 
 	log.Printf("[Client] Connecting to %s...", c.config.ServerURL)
 
-	// 创建认证管理器
 	authMgr := auth.NewManager(auth.Config{
 		Mode:           auth.AuthMode(c.getAuthMode()),
 		PrivateKeyPath: c.config.PrivateKeyPath,
-		PublicKeyPath:  c.config.PublicKeyPath,
 		CertPath:       c.config.CertPath,
+		CACertPath:     c.config.CACertPath,
 		Token:          c.config.ClientToken,
 		Insecure:       c.config.Insecure,
 	})
@@ -140,16 +142,24 @@ func (c *clientImpl) Connect(ctx context.Context) error {
 		return fmt.Errorf("auth init: %w", err)
 	}
 
-	// 创建传输层
+	// 获取 TLS 配置
+	var tlsConfig *tls.Config
+	if authMgr.GetTLSConfig() != nil {
+		tlsConfig = authMgr.GetTLSConfig()
+		log.Printf("[Client] Using mTLS config: certs=%v", len(tlsConfig.Certificates) > 0)
+	} else {
+		log.Printf("[Client] No TLS config from authMgr, using default (token mode)")
+	}
+
 	trans := transport.NewWSTransport(c.config.ServerURL,
 		transport.WithHTTP(c.config.UseHTTP),
 		transport.WithInsecure(c.config.Insecure),
 		transport.WithSNIOverride(c.config.TLSSNI),
 		transport.WithOrigin(c.config.Origin),
 		transport.WithOnMessage(c.handleMessage),
+		transport.WithTLSConfig(tlsConfig),
 	)
 
-	// 连接
 	if err := trans.Connect(ctx); err != nil {
 		c.mu.Lock()
 		c.state = StateIdle
@@ -157,7 +167,6 @@ func (c *clientImpl) Connect(ctx context.Context) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 
-	// 保存 transport 和 auth
 	c.mu.Lock()
 	c.transport = trans
 	c.auth = authMgr
@@ -167,15 +176,22 @@ func (c *clientImpl) Connect(ctx context.Context) error {
 	log.Printf("[Client] Connected to server")
 	c.emit(EventConnect, nil)
 
-	// 注册
 	log.Printf("[Client] Registering as %s...", c.config.ClientID)
 	if err := c.register(); err != nil {
+		if err == ErrRegistrationPending {
+			// 保持连接，启动消息循环等待证书
+			log.Printf("[Client] Waiting for certificate...")
+			if wsTransport, ok := interface{}(trans).(*transport.WSTransport); ok {
+				wsTransport.StartMessageLoop(ctx)
+			}
+			return err
+		}
 		trans.Close()
 		c.mu.Lock()
 		c.transport = nil
 		c.state = StateIdle
 		c.mu.Unlock()
-		return fmt.Errorf("register: %w", err)
+		return err
 	}
 
 	c.mu.Lock()
@@ -185,7 +201,6 @@ func (c *clientImpl) Connect(ctx context.Context) error {
 	log.Printf("[Client] Registered successfully")
 	c.emit(EventRegister, nil)
 
-	// 启动消息循环
 	if wsTransport, ok := interface{}(trans).(*transport.WSTransport); ok {
 		wsTransport.StartMessageLoop(ctx)
 	}
@@ -198,7 +213,7 @@ func (c *clientImpl) Disconnect() error {
 	c.mu.Lock()
 	trans := c.transport
 	c.transport = nil
-	c.state = StateIdle // 重置为 Idle 而不是 Closed
+	c.state = StateIdle
 	c.mu.Unlock()
 
 	if trans != nil {
@@ -277,19 +292,49 @@ func (c *clientImpl) Run(ctx context.Context) error {
 		default:
 		}
 
-		if err := c.Connect(ctx); err != nil {
+		err := c.Connect(ctx)
+		if err == ErrCertificateReceived {
+			// 收到证书，立即用 mTLS 重连
+			log.Printf("[Client] Certificate received, reconnecting with mTLS...")
+			c.Disconnect()
+			continue
+		} else if err == ErrRegistrationPending {
+			// 注册等待审核，保持连接等待证书
+			log.Printf("[Client] Registration pending, waiting for certificate...")
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-c.stopCh:
+				return nil
+			case <-c.certCh:
+				// 收到证书，重新连接
+				log.Printf("[Client] Certificate received, reconnecting...")
+				c.Disconnect()
+				continue
+			case <-c.waitForDisconnect():
+				log.Printf("[Client] Disconnected, reconnecting...")
+			}
+		} else if err != nil {
+			// 其他连接失败
 			log.Printf("[Client] Connection failed: %v, retrying in %v...", err, c.config.ReconnectDelay)
 			c.emit(EventError, err)
-			time.Sleep(c.config.ReconnectDelay)
-			continue
+		} else {
+			// 连接成功，等待断开或证书
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-c.stopCh:
+				return nil
+			case <-c.certCh:
+				// 收到证书，重新连接
+				log.Printf("[Client] Certificate received, reconnecting...")
+				c.Disconnect()
+				continue
+			case <-c.waitForDisconnect():
+				log.Printf("[Client] Disconnected, reconnecting in %v...", c.config.ReconnectDelay)
+				c.Disconnect()
+			}
 		}
-
-		// 等待断开连接
-		<-c.waitForDisconnect()
-		log.Printf("[Client] Disconnected, reconnecting in %v...", c.config.ReconnectDelay)
-
-		// 确保状态重置
-		c.Disconnect()
 
 		select {
 		case <-c.stopCh:
@@ -304,7 +349,6 @@ func (c *clientImpl) Run(ctx context.Context) error {
 func (c *clientImpl) Stop() {
 	select {
 	case <-c.stopCh:
-		// already closed
 	default:
 		close(c.stopCh)
 	}
@@ -317,13 +361,20 @@ func (c *clientImpl) register() error {
 	trans := c.transport
 	clientID := c.config.ClientID
 	clientToken := c.config.ClientToken
+	publicKeyPath := c.config.PublicKeyPath
 	c.mu.RUnlock()
+
+	publicKey := ""
+	if data, err := os.ReadFile(publicKeyPath); err == nil {
+		publicKey = string(data)
+	}
 
 	regMsg := model.WSMessage{
 		Type: "register",
 		Data: model.RegisterData{
-			ClientID: clientID,
-			Token:    clientToken,
+			ClientID:  clientID,
+			Token:     clientToken,
+			PublicKey: publicKey,
 		},
 	}
 
@@ -332,7 +383,6 @@ func (c *clientImpl) register() error {
 		return fmt.Errorf("send register: %w", err)
 	}
 
-	// 等待注册响应
 	log.Printf("[Client] Waiting for register response...")
 	msg, err := trans.Receive()
 	if err != nil {
@@ -346,19 +396,36 @@ func (c *clientImpl) register() error {
 
 	log.Printf("[Client] Received response: type=%s", wsMsg.Type)
 
-	if wsMsg.Type != "registered" {
+	switch wsMsg.Type {
+	case "registered":
+		return nil
+	case "register_pending":
+		log.Printf("[Client] Registration submitted, waiting for approval")
+		return ErrRegistrationPending
+	case "certificate":
+		// 服务器直接发了证书（已批准的客户端）
+		log.Printf("[Client] Certificate received from server, saving and reconnecting with mTLS...")
+		c.handleCertificateMessage(wsMsg.Data)
+		// 清空 certCh 中的残留值，避免下次 ErrRegistrationPending 立即触发
+		select {
+		case <-c.certCh:
+		default:
+		}
+		return ErrCertificateReceived
+	default:
 		return fmt.Errorf("registration failed: %v", wsMsg)
 	}
-
-	return nil
 }
 
 // handleMessage 处理消息
 func (c *clientImpl) handleMessage(msg *model.WSMessage) {
-	// 触发消息事件
+	if msg.Type == "certificate" {
+		c.handleCertificateMessage(msg.Data)
+		return
+	}
+
 	c.emit(EventMessage, msg)
 
-	// 分发给所有消息处理器
 	c.msgHandlersMu.RLock()
 	handlers := make([]MessageHandler, len(c.msgHandlers))
 	copy(handlers, c.msgHandlers)
@@ -376,7 +443,47 @@ func (c *clientImpl) handleMessage(msg *model.WSMessage) {
 	}
 }
 
-// emit 触发事件（异步调用处理器）
+// handleCertificateMessage 处理证书消息
+func (c *clientImpl) handleCertificateMessage(data any) {
+	m, ok := data.(map[string]any)
+	if !ok {
+		log.Printf("[Client] Invalid certificate message data")
+		return
+	}
+
+	certificate, _ := m["certificate"].(string)
+	caCert, _ := m["ca_cert"].(string)
+
+	if certificate == "" {
+		log.Printf("[Client] Empty certificate")
+		return
+	}
+
+	// 保存客户端证书
+	if err := os.WriteFile(c.config.CertPath, []byte(certificate), 0600); err != nil {
+		log.Printf("[Client] Save certificate failed: %v", err)
+		return
+	}
+	log.Printf("[Client] Certificate saved to %s", c.config.CertPath)
+
+	// 保存 CA 证书
+	if caCert != "" && c.config.CACertPath != "" {
+		if err := os.WriteFile(c.config.CACertPath, []byte(caCert), 0600); err != nil {
+			log.Printf("[Client] Save CA cert failed: %v", err)
+		} else {
+			log.Printf("[Client] CA cert saved to %s", c.config.CACertPath)
+		}
+	}
+
+	// 通知 Run 循环重新连接
+	select {
+	case c.certCh <- certificate:
+	default:
+		log.Printf("[Client] Certificate channel full, dropping")
+	}
+}
+
+// emit 触发事件
 func (c *clientImpl) emit(event Event, data any) {
 	c.mu.RLock()
 	handlers := c.eventHandlers[event]
@@ -404,8 +511,27 @@ func (c *clientImpl) waitForDisconnect() <-chan struct{} {
 
 // getAuthMode 获取认证模式
 func (c *clientImpl) getAuthMode() string {
+	mode := string(auth.AuthModeToken)
 	if c.config.CertPath != "" && c.config.PrivateKeyPath != "" {
-		return string(auth.AuthModeMTLS)
+		certExists := fileExists(c.config.CertPath)
+		keyExists := fileExists(c.config.PrivateKeyPath)
+		if certExists && keyExists {
+			mode = string(auth.AuthModeMTLS)
+		}
+		log.Printf("[Client] getAuthMode: certPath=%s certExists=%v keyPath=%s keyExists=%v => %s",
+			c.config.CertPath, certExists, c.config.PrivateKeyPath, keyExists, mode)
 	}
-	return string(auth.AuthModeToken)
+	return mode
 }
+
+// fileExists 检查文件是否存在
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// ErrRegistrationPending 注册等待审核错误
+var ErrRegistrationPending = fmt.Errorf("registration pending: waiting for approval")
+
+// ErrCertificateReceived 收到证书，需要重连
+var ErrCertificateReceived = fmt.Errorf("certificate received, reconnecting with mTLS")

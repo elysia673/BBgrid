@@ -3,7 +3,9 @@ package main
 import (
 	"BBgrid/BBgrid_Client/sdk"
 	"BBgrid/common/config"
+	"BBgrid/common/daemon"
 	alog "BBgrid/common/log"
+	"BBgrid/common/pidfile"
 	"context"
 	"flag"
 	"fmt"
@@ -52,6 +54,23 @@ func main() {
 	log.Printf("[Main] BBgrid Client %s starting...", Version)
 	log.Printf("[Main] Server: %s", cfg.ServerURL)
 	log.Printf("[Main] Client ID: %s", cfg.ClientID)
+
+	// 写入 PID 文件
+	if err := pidfile.Write("client"); err != nil {
+		log.Printf("[Main] Warning: failed to write pid file: %v", err)
+	} else {
+		defer pidfile.Remove("client")
+	}
+
+	// 注册到 daemon
+	daemonClient := daemon.New("client", Version, "")
+	if err := daemonClient.Register(); err != nil {
+		log.Printf("[Main] Warning: register to daemon failed: %v", err)
+	} else {
+		daemonClient.StartHeartbeat()
+		defer daemonClient.Close()
+		log.Printf("[Main] Registered to daemon")
+	}
 
 	// 创建 SDK
 	s := sdk.New(sdk.Config{
